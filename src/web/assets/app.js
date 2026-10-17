@@ -220,6 +220,9 @@ function showView(view) {
     window.scrollTo(0, 0);
     document.querySelector(".nav-item.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
+  // Filter fields can change without an input event (browser restore,
+  // password managers), so recount them whenever search is shown.
+  if (view === "search") syncFiltersToggle();
   if (view === "library") loadLibrary();
   if (view === "downloads") renderJobs();
   if (view === "admin") {
@@ -938,7 +941,10 @@ function parseLength(raw) {
   return m ? String(Number(m[1]) * 60 + Number(m[2] || 0)) : null;
 }
 
-/** The filter inputs as API parameters, or throws with a readable reason. */
+/**
+ * The filter inputs as API parameters, or throws with a readable reason and
+ * the offending input as `field`.
+ */
 function readFilters() {
   const params = {};
   const set = (key, value) => { if (value) params[key] = value; };
@@ -948,7 +954,9 @@ function readFilters() {
   set("exclude", $("#f-exclude").value.trim());
   for (const [id, key, name] of [["#f-min", "min_duration", "minimum"], ["#f-max", "max_duration", "maximum"]]) {
     const secs = parseLength($(id).value);
-    if (secs === null) throw new Error(`The ${name} length must look like 4:30 or 4 (minutes).`);
+    if (secs === null) {
+      throw Object.assign(new Error(`The ${name} length must look like 4:30 or 4 (minutes).`), { field: $(id) });
+    }
     set(key, secs);
   }
   const count = Object.keys(params).length;
@@ -992,6 +1000,14 @@ async function runSearch(event) {
   try {
     filters = readFilters();
   } catch (err) {
+    // The panel may be closed, and the value may not even be the user's
+    // (password managers fill fields despite autocomplete="off"): show it.
+    if (err.field) {
+      $("#search-filters").hidden = false;
+      err.field.focus();
+      err.field.select();
+    }
+    syncFiltersToggle();
     toast(err.message, true);
     return;
   }
@@ -4938,7 +4954,7 @@ const twoFactorRequiredFor = (role) => Boolean(rules.current) &&
   (rules.current.two_factor === "all" || (rules.current.two_factor === "captains" && role === "captain"));
 
 /** `m:ss`, `h:mm:ss` or plain minutes to seconds; null if unreadable. */
-function parseLength(text) {
+function parseRuleLength(text) {
   const parts = text.trim().split(":");
   if (parts.length > 3 || parts.some((p) => !/^\d+$/.test(p))) return null;
   if (parts.length === 1) return Number(parts[0]) * 60;
@@ -5040,7 +5056,7 @@ async function saveIssuer(event) {
 
 async function saveLength(event) {
   event.preventDefault();
-  const secs = parseLength($("#rule-length").value);
+  const secs = parseRuleLength($("#rule-length").value);
   if (secs === null) { toast("Enter a length like 10:00, or 0 for no limit", true); return; }
   if (secs > 86400) { toast("At most 24:00:00 (0 = no limit)", true); return; }
   if (rules.current && secs === rules.current.max_track_secs) return;

@@ -19,7 +19,7 @@ mod soulseek;
 pub use client::ClientPolicy;
 pub use server::serve;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
@@ -30,6 +30,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio_util::io::ReaderStream;
 
 use crate::app::{
@@ -52,6 +53,32 @@ const THEME_JS: &str = include_str!("assets/theme.js");
 const ICON_SVG: &str = include_str!("assets/icon.svg");
 const FAVICON_PNG: &[u8] = include_bytes!("assets/favicon-32.png");
 const APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("assets/apple-touch-icon.png");
+
+/// The page with `?v=<content hash>` on its stylesheet and scripts. A new
+/// build changes the URLs, so no browser or proxy cache can pair this page
+/// with an older app.js or app.css (which half-breaks the UI), even one
+/// that ignores `Cache-Control: no-cache`.
+static VERSIONED_INDEX_HTML: LazyLock<String> = LazyLock::new(|| {
+    [
+        ("\"/app.css\"", APP_CSS),
+        ("\"/theme.js\"", THEME_JS),
+        ("\"/app.js\"", APP_JS),
+    ]
+    .into_iter()
+    .fold(INDEX_HTML.to_owned(), |html, (quoted, body)| {
+        let path = quoted.trim_matches('"');
+        html.replace(quoted, &format!("\"{path}?v={}\"", content_tag(body)))
+    })
+});
+
+/// First 12 hex digits of the SHA-256 of an asset: plenty to tell builds apart.
+fn content_tag(body: &str) -> String {
+    Sha256::digest(body.as_bytes())
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 const CSP: &str = "default-src 'self'; img-src 'self' https: data:; style-src 'self'; \
                    script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'";
@@ -409,7 +436,7 @@ fn asset(content_type: &'static str, body: impl IntoResponse) -> Response {
 }
 
 async fn index() -> Response {
-    asset("text/html; charset=utf-8", INDEX_HTML)
+    asset("text/html; charset=utf-8", VERSIONED_INDEX_HTML.as_str())
 }
 
 async fn app_js() -> Response {
@@ -1036,6 +1063,40 @@ fn content_disposition(file_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_links_every_script_and_stylesheet_by_content_tag() {
+        for (path, body) in [
+            ("/app.css", APP_CSS),
+            ("/theme.js", THEME_JS),
+            ("/app.js", APP_JS),
+        ] {
+            let tagged = format!("\"{path}?v={}\"", content_tag(body));
+            assert!(VERSIONED_INDEX_HTML.contains(&tagged), "{path} untagged");
+            assert!(!VERSIONED_INDEX_HTML.contains(&format!("\"{path}\"")));
+        }
+        assert_ne!(content_tag("a"), content_tag("b"));
+    }
+
+    /// A second top-level `function` with the same name silently replaces
+    /// the first for the whole script (this broke every search once).
+    #[test]
+    fn app_js_declares_each_function_once() {
+        let mut seen = std::collections::HashSet::new();
+        for line in APP_JS.lines() {
+            let Some(rest) = line
+                .strip_prefix("async function ")
+                .or_else(|| line.strip_prefix("function "))
+            else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            assert!(seen.insert(name.clone()), "app.js declares {name} twice");
+        }
+    }
 
     fn headers(origin: Option<&str>, host: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
