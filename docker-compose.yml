@@ -1,0 +1,52 @@
+# Settings come from a `.env` file next to this one (copy `.env.example`).
+# Every value has a working default, so `.env` is optional.
+services:
+  inkult:
+    build: .
+    image: inkult:latest
+    container_name: inkult
+    restart: unless-stopped
+    # Run as the owner of your music directory so files are not root-owned.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    # A tiny init as PID 1 reaps the yt-dlp/ffmpeg processes Inkult starts,
+    # so cancelled or crashed tools never pile up as zombies.
+    init: true
+    # Time to cancel running downloads and clean staging on `docker compose down`.
+    stop_grace_period: 30s
+    # The process needs no Linux capabilities and never gains privileges.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Defaults to this machine only. Inkult speaks plain HTTP, so before
+      # opening it to your network read "Exposing Inkult" in the README.
+      - "${INKULT_HTTP_BIND:-127.0.0.1}:${INKULT_HTTP_PORT:-9876}:9876"
+      # Soulseek peers connect here (one port per signed-in Soulseek account).
+      # Unlike the web UI these must be reachable from the internet: forward
+      # them on your router too. Host and container ports must be identical
+      # (peers are told this number), and the range must equal
+      # INKULT_SOULSEEK_PORTS.
+      - "2234-2238:2234-2238"
+    volumes:
+      # Create both directories before the first start (see README); Docker
+      # would otherwise create them owned by root and Inkult could not write.
+      - ${MUSIC_DIR:-./music}:/music
+      - ${DATA_DIR:-./data}:/data
+    environment:
+      RUST_LOG: ${RUST_LOG:-inkult=info}
+      # Empty values fall back to Inkult's defaults (see README, Configuration).
+      INKULT_ALLOWED_HOSTS: ${INKULT_ALLOWED_HOSTS:-}
+      INKULT_MAX_CONCURRENT_DOWNLOADS: ${INKULT_MAX_CONCURRENT_DOWNLOADS:-}
+      INKULT_MAX_RETRIES: ${INKULT_MAX_RETRIES:-}
+      INKULT_SEARCH_LIMIT: ${INKULT_SEARCH_LIMIT:-}
+      INKULT_PLAYLIST_LIMIT: ${INKULT_PLAYLIST_LIMIT:-}
+      INKULT_MAX_TRACK_SECS: ${INKULT_MAX_TRACK_SECS:-}
+      INKULT_SOULSEEK_UPLOAD_SLOTS: ${INKULT_SOULSEEK_UPLOAD_SLOTS:-}
+      INKULT_TOTP_ISSUER: ${INKULT_TOTP_ISSUER:-}
+      INKULT_TRUSTED_PROXIES: ${INKULT_TRUSTED_PROXIES:-}
+    # Keep container logs from slowly filling the disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

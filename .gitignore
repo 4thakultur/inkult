@@ -1,0 +1,76 @@
+# --- Build output ---------------------------------------------------------
+/target/
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+lcov.info
+/coverage/
+flamegraph.svg
+perf.data*
+
+# --- Inkult runtime data --------------------------------------------------
+# Default library and state directories (INKULT_LIBRARY_DIR / INKULT_DATA_DIR,
+# MUSIC_DIR / DATA_DIR with Docker). They hold your music, accounts,
+# password hashes, TOTP secrets and Soulseek passwords: never commit them.
+/music/
+/data/
+.inkult-tmp/
+staging/
+
+# State files, wherever a data directory ends up.
+users.json
+settings.json
+soulseek.json
+library.json
+
+# Audio and cover files, so downloaded music can never be committed by
+# accident. (The UI's own icons live in src/web/assets and are kept.)
+*.mp3
+*.flac
+*.m4a
+*.aac
+*.opus
+*.ogg
+*.wav
+*.aif
+*.aiff
+*.alac
+*.wma
+*.webm
+*.part
+*.ytdl
+*.jpg
+*.jpeg
+*.webp
+
+# --- Secrets and local configuration -------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+docker-compose.override.yml
+compose.override.yml
+
+# --- Logs and test leftovers ----------------------------------------------
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# --- Editors, tools and OS files ------------------------------------------
+.idea/
+.vscode/
+*.iml
+.fleet/
+.zed/
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+desktop.ini

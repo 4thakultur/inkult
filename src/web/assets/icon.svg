@@ -1,0 +1,12 @@
+<!-- Kult, Inkult's skeleton mascot, in the Pipeboy palette (tab icon). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <rect width="48" height="48" rx="10" fill="#020a03"/>
+  <g fill="none" stroke="#41ff6a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="24" cy="10" r="5"/>
+    <path d="M22 9.6h.1M26 9.6h.1" stroke-width="2.6"/>
+    <path d="M22.4 12.8h3.2" stroke-width="1.6"/>
+    <path d="M24 15v14M20.5 18.5h7M21 22h6M20.5 25.5h7"/>
+    <path d="M20.5 17l-5.5-4-2-6.5M27.5 17l5.5-4 2-6.5"/>
+    <path d="M22 29l-2.5 7v5.5h-2M26 29l2.5 7v5.5h2"/>
+  </g>
+</svg>

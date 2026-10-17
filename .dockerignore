@@ -1,0 +1,22 @@
+# Only Cargo.toml, Cargo.lock and src/ are needed to build the image; keep
+# everything else (and especially music, state and secrets) out of the
+# build context.
+target
+music
+data
+.git
+.github
+.env
+.env.*
+.claude
+.idea
+.vscode
+*.log
+tests
+README.md
+INSTALL.md
+LICENSE
+CLAUDE.md
+docker-compose*.yml
+compose*.yml
+Dockerfile

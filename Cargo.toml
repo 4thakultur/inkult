@@ -1,0 +1,36 @@
+[package]
+name = "inkult"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Self-hosted music downloader and library manager"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+argon2 = "0.5.3"
+async-trait = "0.1.92"
+axum = "0.8.9"
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+hmac = "0.12.1"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "server-graceful", "http1"] }
+lofty = "0.25.4"
+md-5 = "0.10.6"
+password-hash = { version = "0.5.0", features = ["getrandom"] }
+qrcodegen = "1.8.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.10.6"
+sha2 = "0.10.9"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal"] }
+tokio-util = { version = "0.7.20", features = ["io"] }
+tower-service = "0.3.3"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+zxcvbn = { version = "3.1.1", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"

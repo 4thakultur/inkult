@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#020a03">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-title" content="Inkult">
+  <title>Inkult</title>
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/theme.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="stars stars-l" aria-hidden="true"><i class="far"></i><i class="near"></i><i class="tw"></i></div>
+  <div class="stars stars-r" aria-hidden="true"><i class="far"></i><i class="near"></i><i class="tw"></i></div>
+  <!-- Artwork tint (app.css .art). The flood colours come from the theme via
+       CSS, so switching theme retints every cover without touching images. -->
+  <svg class="svg-defs" aria-hidden="true" focusable="false">
+    <filter id="phosphor-tint" color-interpolation-filters="sRGB">
+      <!-- Luminance to grey, with a little extra contrast. -->
+      <feColorMatrix type="matrix" values=".2126 .7152 .0722 0 0  .2126 .7152 .0722 0 0  .2126 .7152 .0722 0 0  0 0 0 1 0"/>
+      <feComponentTransfer result="grey">
+        <feFuncR type="linear" slope="1.1" intercept="-.04"/>
+        <feFuncG type="linear" slope="1.1" intercept="-.04"/>
+        <feFuncB type="linear" slope="1.1" intercept="-.04"/>
+      </feComponentTransfer>
+      <!-- Shadows and midtones in the phosphor colour... -->
+      <feFlood class="tint-fg" result="fg"/>
+      <feBlend mode="multiply" in="fg" in2="grey" result="shade"/>
+      <!-- ...and only the brightest highlights lifted towards --bright. -->
+      <feComponentTransfer in="grey" result="peaks">
+        <feFuncR type="gamma" exponent="4"/>
+        <feFuncG type="gamma" exponent="4"/>
+        <feFuncB type="gamma" exponent="4"/>
+      </feComponentTransfer>
+      <feFlood class="tint-bright" result="bright"/>
+      <feBlend mode="multiply" in="bright" in2="peaks" result="glint"/>
+      <feBlend mode="screen" in="shade" in2="glint"/>
+      <feComposite operator="in" in2="SourceAlpha"/>
+    </filter>
+  </svg>
+  <div class="crt gate" id="gate" hidden>
+    <section class="box gate-box" aria-labelledby="gate-title">
+      <h1 id="gate-title" class="box-title">*** INKULT v<span id="gate-version">?</span> ***</h1>
+<pre class="logo gate-logo" aria-hidden="true">
+#######  ###   ###  ###   ###  ###   ###  ###        #########
+  ###    ####  ###  ###  ###   ###   ###  ###           ###
+  ###    ##### ###  ### ###    ###   ###  ###           ###
+  ###    ### #####  ######     ###   ###  ###           ###
+  ###    ###  ####  ### ###    ###   ###  ###           ###
+  ###    ###   ###  ###  ###   ###   ###  ###           ###
+#######  ###   ###  ###   ###   #######   #########     ###</pre>
+      <p class="gate-intro" id="gate-intro">AUTHORIZED CREW ONLY. IDENTIFY YOURSELF.</p>
+      <form id="gate-form" class="form-grid" novalidate>
+        <!-- data-gate lists the gate modes (app.js, showGate) an element shows in. -->
+        <label for="gate-code" class="prompt" data-gate="setup" hidden>SETUP CODE&gt;</label>
+        <input id="gate-code" class="field" data-gate="setup" hidden autocomplete="one-time-code"
+               spellcheck="false" autocapitalize="none" maxlength="32" placeholder="from the server log">
+        <label for="gate-user" class="prompt" data-gate="login setup">HANDLE&gt;</label>
+        <input id="gate-user" class="field" data-gate="login setup" autocomplete="username" autocapitalize="none"
+               spellcheck="false" maxlength="32" required>
+        <label for="gate-pass" class="prompt" data-gate="login setup">PASSWORD&gt;</label>
+        <input id="gate-pass" class="field" data-gate="login setup" type="password" autocomplete="current-password"
+               maxlength="128" required>
+        <label for="gate-confirm" class="prompt" data-gate="setup" hidden>CONFIRM&gt;</label>
+        <input id="gate-confirm" class="field" type="password" data-gate="setup" hidden
+               autocomplete="new-password" maxlength="128">
+        <label for="gate-otp" class="prompt" data-gate="otp" hidden>CODE&gt;</label>
+        <input id="gate-otp" class="field" data-gate="otp" hidden autocomplete="one-time-code"
+               inputmode="numeric" spellcheck="false" autocapitalize="none" maxlength="24"
+               placeholder="6 digits">
+        <p class="error-line form-wide" id="gate-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary form-wide" id="gate-submit">[ LOGIN ]</button>
+        <button type="button" class="btn form-wide gate-back" id="gate-back" data-gate="otp" hidden>[ BACK ]</button>
+      </form>
+    </section>
+  </div>
+
+  <div id="app" hidden>
+  <div class="crt">
+    <!-- Compact screens (phones, short landscape): a slim top bar replaces
+         the header, logo and menu, which move into the sliding drawer. -->
+    <div class="appbar" id="appbar">
+      <button type="button" class="appbar-menu" id="drawer-open" aria-controls="drawer" aria-expanded="false"
+              aria-label="Open menu"><span aria-hidden="true">≡</span><span class="appbar-dot" id="appbar-dot" hidden></span></button>
+      <span class="appbar-title" id="appbar-title">SEARCH</span>
+      <!-- Kult, the mascot: dances while audio plays, sleeps otherwise. app.js
+           toggles .playing from syncPlayButtons, so it follows the real audio
+           state, and sets data-move to pick the dance. The header's copy on
+           wide screens is cloned from this one. -->
+      <span class="kult appbar-brand" id="appbar-brand" aria-hidden="true">
+        <svg class="skelly" viewBox="0 0 40 32" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <g class="skelly-dance">
+            <g class="sk-body">
+              <g class="sk-head">
+                <circle cx="20" cy="6" r="4"/>
+                <path d="M18.4 5.6h.1M21.5 5.6h.1" stroke-width="1.8"/>
+                <path d="M18.6 8.3h2.8"/>
+              </g>
+              <path d="M20 10v10M17 12.5h6M17.5 15h5M18 17.5h4M17 20h6"/>
+              <g class="sk-arm-l"><path d="M17 11.5l-4 4"/><path class="sk-fore-l" d="M13 15.5l-2-4"/></g>
+              <g class="sk-arm-r"><path d="M23 11.5l4 4"/><path class="sk-fore-r" d="M27 15.5l2-4"/></g>
+              <path class="sk-leg-l" d="M18 20l-2 5.5v4.5h-1.5"/>
+              <path class="sk-leg-r" d="M22 20l2 5.5v4.5h1.5"/>
+            </g>
+          </g>
+          <g class="skelly-sleep">
+            <circle cx="9" cy="25" r="4"/>
+            <path d="M7.2 24.6h1.4M10 24.6h1.2" stroke-width="1.2"/>
+            <path d="M13 26h20M33 26l4 1"/>
+            <path class="sk-ribs" d="M16 23.5v5M18.5 23v6M21 23.5v5M26 24v4"/>
+            <path d="M14 29l6 1"/>
+            <g class="sk-zzz" fill="currentColor" stroke="none" font-family="inherit" font-weight="bold">
+              <text x="13" y="18" font-size="6">z</text>
+              <text x="18" y="12" font-size="7">z</text>
+              <text x="24" y="6" font-size="8">Z</text>
+            </g>
+          </g>
+        </svg>
+      </span>
+      <!-- Messages only: opens the room list panel on the right. -->
+      <button type="button" class="btn appbar-rooms" id="rooms-open" aria-controls="irc-side" aria-expanded="false">[ # ROOMS ]<span class="appbar-dot" id="rooms-dot" hidden></span></button>
+    </div>
+    <!-- On wide screens this wrapper is display: contents, so its children
+         lay out as before; on compact screens it is the sliding drawer. -->
+    <div class="drawer" id="drawer" aria-label="Menu">
+    <div class="drawer-top panel-top">
+      <button type="button" class="btn" id="drawer-close">[ CLOSE ]</button>
+    </div>
+    <header class="box head-box">
+      <div class="box-title">*** INKULT v<span id="version">?</span> ***</div>
+      <div class="sysinfo">
+        <dl class="sysvars">
+          <dt>USER</dt><dd id="user-name" class="keep-case">?</dd>
+          <dt>RANK</dt><dd id="user-rank">?</dd>
+          <dt>TIME</dt><dd id="clock-time">--:--:--</dd>
+          <dt>DATE</dt><dd id="clock-date">--/--/--</dd>
+        </dl>
+<pre class="logo head-logo" aria-hidden="true">
+#######  ###   ###  ###   ###  ###   ###  ###        #########
+  ###    ####  ###  ###  ###   ###   ###  ###           ###
+  ###    ##### ###  ### ###    ###   ###  ###           ###
+  ###    ### #####  ######     ###   ###  ###           ###
+  ###    ###  ####  ### ###    ###   ###  ###           ###
+  ###    ###   ###  ###  ###   ###   ###  ###           ###
+#######  ###   ###  ###   ###   #######   #########     ###</pre>
+        <div class="head-side">
+          <p class="motto">MUSIC WANTS<br>TO BE FREE.</p>
+          <!-- Kult on wide screens: app.js clones the top-bar skeleton in here. -->
+          <span class="kult head-kult" id="head-kult" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="statline">
+        <span>ONLINE <span id="online-count">0</span></span>
+        <span class="account">
+          <button type="button" class="btn" id="btn-passwd">[ PASSWD ]</button>
+          <button type="button" class="btn" id="btn-logout">[ LOG OFF ]</button>
+        </span>
+      </div>
+    </header>
+
+    <section class="box logo-box">
+      <h1 class="visually-hidden">Inkult</h1>
+<pre class="logo" aria-hidden="true">
+#######  ###   ###  ###   ###  ###   ###  ###        #########
+  ###    ####  ###  ###  ###   ###   ###  ###           ###
+  ###    ##### ###  ### ###    ###   ###  ###           ###
+  ###    ### #####  ######     ###   ###  ###           ###
+  ###    ###  ####  ### ###    ###   ###  ###           ###
+  ###    ###   ###  ###  ###   ###   ###  ###           ###
+#######  ###   ###  ###   ###   #######   #########     ###</pre>
+    </section>
+
+    <nav class="box menubar" aria-label="Main">
+      <button class="nav-item active" data-view="search" type="button" aria-keyshortcuts="1"><span class="key">[1] </span>SEARCH</button>
+      <button class="nav-item" data-view="soulseek" type="button" aria-keyshortcuts="2"><span class="key">[2] </span>SOULSEEK<span class="badge" id="slsk-badge" hidden>0</span></button>
+      <button class="nav-item" data-view="downloads" type="button" aria-keyshortcuts="3"><span class="key">[3] </span>DOWNLOADS<span class="badge" id="active-badge" hidden>0</span></button>
+      <button class="nav-item" data-view="library" type="button" aria-keyshortcuts="4"><span class="key">[4] </span>LIBRARY</button>
+      <button class="nav-item" data-view="messages" type="button" aria-keyshortcuts="5"><span class="key">[5] </span>MESSAGES<span class="badge" id="rooms-badge" hidden>0</span></button>
+      <button class="nav-item" data-view="settings" type="button" aria-keyshortcuts="6"><span class="key">[6] </span>SETTINGS</button>
+      <button class="nav-item" data-view="admin" type="button" aria-keyshortcuts="7" hidden><span class="key">[7] </span>ADMIN</button>
+    </nav>
+    </div>
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+
+    <div class="banner" id="banner" role="alert" hidden></div>
+
+    <main class="box main">
+      <section class="view" id="view-search" aria-labelledby="search-title">
+        <h2 id="search-title" class="box-title">FILE SEARCH: /YOUTUBE-MUSIC/ + /SOUNDCLOUD/</h2>
+        <form class="search-bar" id="search-form" autocomplete="off">
+          <label for="search-input" class="prompt">SEARCH&gt;</label>
+          <input id="search-input" type="search" maxlength="2048"
+                 placeholder="title, artist, or paste a youtube / soundcloud link"
+                 aria-label="Search tracks or paste a link">
+          <button type="submit" class="btn btn-primary">[ RUN ]</button>
+        </form>
+        <div class="chips" role="radiogroup" aria-label="Source">
+          <span class="dim">SOURCE:</span>
+          <button type="button" class="chip active" data-provider="all" role="radio" aria-checked="true">ALL</button>
+          <button type="button" class="chip" data-provider="youtube" role="radio" aria-checked="false">YT MUSIC</button>
+          <button type="button" class="chip" data-provider="soundcloud" role="radio" aria-checked="false">SOUNDCLOUD</button>
+          <button type="button" class="btn filters-toggle" id="filters-toggle"
+                  aria-expanded="false" aria-controls="search-filters">[+] FILTERS</button>
+        </div>
+        <form class="search-filters" id="search-filters" autocomplete="off" hidden>
+          <div class="filter-grid">
+            <label for="f-year-from">YEAR</label>
+            <span class="filter-range">
+              <input id="f-year-from" class="field" inputmode="numeric" maxlength="4" placeholder="from" aria-label="Year from">
+              <span class="dim">–</span>
+              <input id="f-year-to" class="field" inputmode="numeric" maxlength="4" placeholder="to" aria-label="Year to">
+            </span>
+            <label for="f-label">LABEL</label>
+            <input id="f-label" class="field" maxlength="100" placeholder="ninja tune, warp…">
+            <label for="f-exclude">EXCLUDE</label>
+            <input id="f-exclude" class="field" maxlength="300" placeholder='remix live "sped up"'>
+            <label for="f-min">LENGTH</label>
+            <span class="filter-range">
+              <input id="f-min" class="field" maxlength="8" placeholder="min m:ss" aria-label="Minimum length (minutes:seconds)">
+              <span class="dim">–</span>
+              <input id="f-max" class="field" maxlength="8" placeholder="max m:ss" aria-label="Maximum length (minutes:seconds)">
+            </span>
+            <span></span>
+            <label class="check"><input type="checkbox" id="f-unknown"> <span>ALSO SHOW TRACKS WITH UNKNOWN YEAR / LABEL</span></label>
+          </div>
+          <p class="setting-note dim">Whole words, any case. YT Music: release year and label from the release info,
+             so filtering by them makes the search a little slower. SoundCloud: upload year; the label counts
+             if the tags, uploader or description name it. Without search words, the label is searched for.</p>
+          <div class="filter-actions">
+            <button type="submit" class="btn btn-primary">[ APPLY ]</button>
+            <button type="button" class="btn" id="filters-clear">[ CLEAR ]</button>
+          </div>
+        </form>
+        <div id="search-results" aria-live="polite">
+          <div class="empty">
+            <p class="empty-title">&gt;&gt; READY.</p>
+            <p>SEARCH YOUTUBE MUSIC AND SOUNDCLOUD, OR PASTE A TRACK, PLAYLIST, ALBUM OR SET LINK.
+               INKULT GRABS THE BEST AUDIO THE SOURCE OFFERS, KEEPS IT WITHOUT RE-ENCODING,
+               TAGS IT AND FILES IT INTO YOUR LIBRARY.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-soulseek" aria-labelledby="slsk-title" hidden>
+        <div class="view-header">
+          <h2 id="slsk-title" class="box-title">P2P NETWORK: /SOULSEEK/</h2>
+          <span class="slsk-conn" id="slsk-conn" aria-live="polite"></span>
+        </div>
+
+        <div id="slsk-signin" hidden>
+          <div class="empty">
+            <p class="empty-title">&gt;&gt; SIGN IN TO SOULSEEK.</p>
+            <p>SEARCH OTHER DIGGERS' COLLECTIONS, BROWSE THEIR SHARES AND QUEUE WHOLE RELEASES.
+               FINISHED FILES ARE CHECKED, TAGGED AND FILED INTO YOUR LIBRARY.</p>
+          </div>
+          <form id="slsk-signin-form" class="form-grid" autocomplete="off" novalidate>
+            <label for="slsk-user" class="prompt">USERNAME&gt;</label>
+            <input id="slsk-user" class="field" maxlength="30" autocomplete="username"
+                   autocapitalize="none" spellcheck="false" required>
+            <label for="slsk-pass" class="prompt">PASSWORD&gt;</label>
+            <input id="slsk-pass" class="field" type="password" maxlength="128" autocomplete="current-password" required>
+            <label class="form-wide check"><input type="checkbox" id="slsk-remember">
+              <span>STAY SIGNED IN <span class="dim">(stores the password on this server so Inkult can reconnect when you next log in after a restart)</span></span></label>
+            <p class="form-wide dim setting-note">No account yet? Pick a new username and password: Soulseek creates
+               the account at the first sign-in. There is no password reset, so keep it safe.</p>
+            <p class="error-line form-wide" id="slsk-signin-error" role="alert" hidden></p>
+            <button type="submit" class="btn btn-primary form-wide" id="slsk-signin-submit">[ CONNECT ]</button>
+          </form>
+        </div>
+
+        <div id="slsk-main" hidden>
+          <div class="chips slsk-tabs" id="slsk-tabs" role="radiogroup" aria-label="Soulseek">
+            <button type="button" class="chip active" data-pane="search" role="radio" aria-checked="true">SEARCH</button>
+            <button type="button" class="chip" data-pane="transfers" role="radio" aria-checked="false">TRANSFERS<span class="badge" id="slsk-transfers-badge" hidden>0</span></button>
+            <button type="button" class="chip" data-pane="browse" role="radio" aria-checked="false">BROWSE USER</button>
+            <button type="button" class="chip" data-pane="messages" role="radio" aria-checked="false">MESSAGES<span class="badge" id="slsk-unread-badge" hidden>0</span></button>
+            <button type="button" class="chip" data-pane="setup" role="radio" aria-checked="false">SETUP</button>
+          </div>
+
+          <div class="slsk-pane" id="slsk-pane-search">
+            <form class="search-bar" id="slsk-search-form" autocomplete="off">
+              <label for="slsk-query" class="prompt">SEEK&gt;</label>
+              <input id="slsk-query" type="search" maxlength="200"
+                     placeholder="artist, title, label, catalog number…" aria-label="Search Soulseek">
+              <button type="submit" class="btn btn-primary">[ RUN ]</button>
+            </form>
+            <div class="slsk-history" id="slsk-history"></div>
+            <div class="slsk-filters" id="slsk-filters">
+              <label class="filter-wrap"><span class="prompt">FILTER&gt;</span>
+                <input type="search" id="slsk-filter" class="filter" placeholder="words, -exclude" aria-label="Filter results">
+              </label>
+              <div class="chips" id="slsk-format" role="radiogroup" aria-label="Format">
+                <span class="dim">FORMAT:</span>
+                <button type="button" class="chip active" data-format="all" role="radio" aria-checked="true">ALL</button>
+                <button type="button" class="chip" data-format="lossless" role="radio" aria-checked="false">LOSSLESS</button>
+                <button type="button" class="chip" data-format="flac" role="radio" aria-checked="false">FLAC</button>
+                <button type="button" class="chip" data-format="mp3" role="radio" aria-checked="false">MP3</button>
+                <button type="button" class="chip" data-format="aac" role="radio" aria-checked="false">AAC/M4A</button>
+                <button type="button" class="chip" data-format="wav" role="radio" aria-checked="false">WAV/AIFF</button>
+              </div>
+              <div class="chips" id="slsk-bitrate" role="radiogroup" aria-label="Minimum bitrate">
+                <span class="dim">MIN LOSSY:</span>
+                <button type="button" class="chip active" data-kbps="0" role="radio" aria-checked="true">ANY</button>
+                <button type="button" class="chip" data-kbps="192" role="radio" aria-checked="false">192</button>
+                <button type="button" class="chip" data-kbps="256" role="radio" aria-checked="false">256</button>
+                <button type="button" class="chip" data-kbps="320" role="radio" aria-checked="false">320</button>
+              </div>
+              <div class="chips" id="slsk-sort" role="radiogroup" aria-label="Sort">
+                <span class="dim">SORT:</span>
+                <button type="button" class="chip active" data-sort="best" role="radio" aria-checked="true">FASTEST START</button>
+                <button type="button" class="chip" data-sort="quality" role="radio" aria-checked="false">QUALITY</button>
+                <button type="button" class="chip" data-sort="speed" role="radio" aria-checked="false">SPEED</button>
+                <button type="button" class="chip" data-sort="files" role="radio" aria-checked="false">MOST FILES</button>
+                <label class="check"><input type="checkbox" id="slsk-free-only"> <span>FREE SLOT ONLY</span></label>
+              </div>
+            </div>
+            <div id="slsk-results" aria-live="polite"></div>
+          </div>
+
+          <div class="slsk-pane" id="slsk-pane-transfers" hidden>
+            <div class="view-header">
+              <p class="section-title">DOWNLOADS</p>
+              <button type="button" class="btn" id="slsk-clear-downloads">[ CLEAR FINISHED ]</button>
+            </div>
+            <div id="slsk-downloads"></div>
+            <div class="view-header slsk-uploads-head">
+              <p class="section-title">UPLOADS</p>
+              <button type="button" class="btn" id="slsk-clear-uploads">[ CLEAR FINISHED ]</button>
+            </div>
+            <div id="slsk-uploads"></div>
+          </div>
+
+          <div class="slsk-pane" id="slsk-pane-browse" hidden>
+            <form class="search-bar" id="slsk-browse-form" autocomplete="off">
+              <label for="slsk-browse-user" class="prompt">USER&gt;</label>
+              <input id="slsk-browse-user" maxlength="30" autocapitalize="none" spellcheck="false"
+                     placeholder="soulseek username" aria-label="Soulseek username">
+              <button type="submit" class="btn btn-primary">[ BROWSE ]</button>
+            </form>
+            <div id="slsk-browse"></div>
+          </div>
+
+          <div class="slsk-pane" id="slsk-pane-messages" hidden>
+            <form class="search-bar" id="slsk-chat-new" autocomplete="off">
+              <label for="slsk-chat-user" class="prompt">MSG TO&gt;</label>
+              <input id="slsk-chat-user" maxlength="30" autocapitalize="none" spellcheck="false"
+                     placeholder="soulseek username" aria-label="Start a conversation with">
+              <button type="submit" class="btn btn-primary">[ OPEN ]</button>
+            </form>
+            <div class="slsk-chat" id="slsk-chat">
+              <div class="slsk-convos" id="slsk-convos"></div>
+              <div class="slsk-convo" id="slsk-convo"></div>
+            </div>
+          </div>
+
+          <div class="slsk-pane" id="slsk-pane-setup" hidden>
+            <div class="setting">
+              <p class="setting-label">ACCOUNT:</p>
+              <p class="setting-note" id="slsk-account"></p>
+              <div class="setting-options"><button type="button" class="btn danger" id="slsk-signout">[ SIGN OUT ]</button></div>
+            </div>
+            <div class="setting">
+              <p class="setting-label" id="slsk-share-label">SHARE MY LIBRARY:</p>
+              <div class="chips setting-options" id="slsk-share" role="radiogroup" aria-labelledby="slsk-share-label">
+                <button type="button" class="chip" data-share="on" role="radio" aria-checked="false">ON</button>
+                <button type="button" class="chip" data-share="off" role="radio" aria-checked="false">OFF</button>
+              </div>
+              <p class="setting-note dim" id="slsk-share-detail"></p>
+            </div>
+            <div class="setting">
+              <p class="setting-label">WISHLIST:</p>
+              <p class="setting-note dim">Searched again automatically at the server's pace (about every 12 minutes, one term at a time).
+                 New finds show up under the search history.</p>
+              <form class="search-bar" id="slsk-wish-form" autocomplete="off">
+                <label for="slsk-wish" class="prompt">WANT&gt;</label>
+                <input id="slsk-wish" maxlength="200" placeholder="something rare" aria-label="Add a wishlist term">
+                <button type="submit" class="btn btn-primary">[ ADD ]</button>
+              </form>
+              <div id="slsk-wishlist"></div>
+            </div>
+            <div class="setting">
+              <p class="setting-label">CONNECTIVITY:</p>
+              <p class="setting-note dim" id="slsk-port"></p>
+            </div>
+            <div class="setting" id="slsk-notices-wrap" hidden>
+              <p class="setting-label">SERVER NOTICES:</p>
+              <div id="slsk-notices"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-downloads" aria-labelledby="downloads-title" hidden>
+        <div class="view-header">
+          <h2 id="downloads-title" class="box-title">TRANSFER QUEUE: /INCOMING/</h2>
+          <button type="button" class="btn" id="clear-finished">[ CLEAR FINISHED ]</button>
+        </div>
+        <div id="jobs" aria-live="polite"></div>
+      </section>
+
+      <section class="view" id="view-library" aria-labelledby="library-title" hidden>
+        <div class="view-header">
+          <h2 id="library-title" class="box-title">FILE DIRECTORY: <span id="library-dir">/MUSIC/</span></h2>
+          <label class="filter-wrap"><span class="prompt">FILTER&gt;</span>
+            <input type="search" id="library-filter" class="filter" aria-label="Filter library">
+          </label>
+        </div>
+        <div class="chips" id="library-scope" role="radiogroup" aria-label="Show" hidden>
+          <span class="dim">SHOW:</span>
+          <button type="button" class="chip active" data-scope="mine" role="radio" aria-checked="true">MY CHEST</button>
+          <button type="button" class="chip" data-scope="all" role="radio" aria-checked="false">ENTIRE HOLD</button>
+        </div>
+        <div id="library"></div>
+      </section>
+
+      <section class="view" id="view-messages" aria-labelledby="messages-title" hidden>
+        <h2 id="messages-title" class="box-title">MESSAGE BASE: CHAT ROOMS</h2>
+        <div class="irc">
+          <!-- Rooms and users: grid columns on wide screens (display:
+               contents), a panel sliding in from the right on compact ones. -->
+          <div class="irc-side" id="irc-side" aria-label="Rooms">
+          <div class="panel-top">
+            <button type="button" class="btn" id="rooms-close">[ CLOSE ]</button>
+          </div>
+          <aside class="irc-rooms" aria-label="Rooms">
+            <p class="irc-heading">JOINED:</p>
+            <div class="irc-room-list" id="rooms-joined"></div>
+            <div class="irc-heading irc-heading-row">
+              <span>ROOM LIST:</span>
+              <button type="button" class="btn" id="room-join-private">[ JOIN PRIVATE ]</button>
+            </div>
+            <div class="irc-room-list" id="rooms-all"></div>
+            <p class="irc-heading irc-new-heading">NEW ROOM:</p>
+            <form class="irc-new" id="room-new" autocomplete="off" novalidate>
+              <label for="room-new-name" class="prompt">NAME&gt;</label>
+              <input id="room-new-name" class="filter" maxlength="33" autocapitalize="none" spellcheck="false"
+                     placeholder="room name" aria-label="New room name">
+              <!-- Optional: a password makes the new room private. -->
+              <label for="room-new-password" class="prompt">PASS&gt;</label>
+              <input id="room-new-password" class="filter" type="password" maxlength="128"
+                     autocomplete="new-password" placeholder="optional"
+                     aria-label="Password for a private room (optional)">
+              <button type="submit" class="btn btn-primary">[ CREATE ]</button>
+            </form>
+          </aside>
+          <aside class="irc-users" id="room-users" aria-label="Users in this room" hidden></aside>
+          </div>
+          <div class="irc-main" id="room-main"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings" aria-labelledby="settings-title" hidden>
+        <h2 id="settings-title" class="box-title">SYSTEM CONFIG: THIS TERMINAL</h2>
+        <div class="setting" id="twofa-setting">
+          <p class="setting-label">TWO-FACTOR LOGIN: <span id="twofa-state" class="dim">…</span></p>
+          <p class="setting-note dim" id="twofa-detail"></p>
+          <div class="setting-options twofa-actions" id="twofa-actions"></div>
+          <p class="setting-note dim">Your account, on every browser: logging in also asks for a 6-digit code
+             from an authenticator app (Google Authenticator, Microsoft Authenticator, Aegis, 2FAS, 1Password, …).</p>
+        </div>
+        <div class="setting">
+          <p class="setting-label" id="theme-label">THEME:</p>
+          <div class="chips setting-options" id="theme-options" role="radiogroup" aria-labelledby="theme-label">
+            <button type="button" class="chip" data-theme-id="pipeboy" role="radio" aria-checked="false">PIPEBOY</button>
+            <button type="button" class="chip" data-theme-id="amoled" role="radio" aria-checked="false">AMOLED</button>
+            <button type="button" class="chip" data-theme-id="amoled-white" role="radio" aria-checked="false">AMOLED WHITE</button>
+            <button type="button" class="chip" data-theme-id="amoled-blue" role="radio" aria-checked="false">AMOLED BLUE</button>
+            <button type="button" class="chip" data-theme-id="amoled-purple" role="radio" aria-checked="false">AMOLED PURPLE</button>
+            <button type="button" class="chip" data-theme-id="amoled-orange" role="radio" aria-checked="false">AMOLED ORANGE</button>
+            <button type="button" class="chip" data-theme-id="amoled-red" role="radio" aria-checked="false">AMOLED RED</button>
+          </div>
+          <p class="setting-note dim" id="theme-detail"></p>
+        </div>
+        <div class="setting">
+          <p class="setting-label" id="stars-label">STARFIELD:</p>
+          <div class="chips setting-options" id="stars-options" role="radiogroup" aria-labelledby="stars-label">
+            <button type="button" class="chip" data-stars="on" role="radio" aria-checked="false">ON</button>
+            <button type="button" class="chip" data-stars="off" role="radio" aria-checked="false">OFF</button>
+          </div>
+          <p class="setting-note dim">Pixel stars in the empty margins left and right of the screen (wide displays only).</p>
+        </div>
+        <div class="setting">
+          <p class="setting-label" id="kult-label">KULT:</p>
+          <div class="chips setting-options" id="kult-options" role="radiogroup" aria-labelledby="kult-label">
+            <button type="button" class="chip" data-kult="on" role="radio" aria-checked="false">ON</button>
+            <button type="button" class="chip" data-kult="off" role="radio" aria-checked="false">OFF</button>
+          </div>
+          <p class="setting-note dim">The skeleton mascot: dances (backflips included) while music plays, sleeps when it stops.</p>
+        </div>
+        <div class="setting">
+          <p class="setting-label" id="cursor-label">CURSOR:</p>
+          <div class="chips setting-options" id="cursor-options" role="radiogroup" aria-labelledby="cursor-label">
+            <button type="button" class="chip" data-cursor-id="basic" role="radio" aria-checked="false">BASIC</button>
+            <button type="button" class="chip" data-cursor-id="sniper" role="radio" aria-checked="false">SNIPER</button>
+            <button type="button" class="chip" data-cursor-id="blazing" role="radio" aria-checked="false">BLAZING BASIC</button>
+            <button type="button" class="chip" data-cursor-id="soulseek" role="radio" aria-checked="false">SOULSEEK</button>
+          </div>
+          <p class="setting-note dim" id="cursor-detail"></p>
+        </div>
+        <p class="setting-note dim">THEME, STARFIELD, KULT AND CURSOR ARE SAVED IN THIS BROWSER ONLY.</p>
+      </section>
+
+      <section class="view" id="view-admin" aria-labelledby="admin-title" hidden>
+        <h2 id="admin-title" class="box-title">CAPTAIN'S QUARTERS: ADMIN</h2>
+        <h3 class="admin-heading">SHIP RULES: THE WHOLE SERVER</h3>
+        <div id="rules" aria-live="polite">
+          <div class="setting">
+            <p class="setting-label" id="rule-2fa-label">TWO-FACTOR LOGIN:</p>
+            <div class="chips setting-options" id="rule-2fa" role="radiogroup" aria-labelledby="rule-2fa-label">
+              <button type="button" class="chip" data-policy="all" role="radio" aria-checked="false">REQUIRED FOR EVERYONE</button>
+              <button type="button" class="chip" data-policy="captains" role="radio" aria-checked="false">CAPTAINS ONLY</button>
+              <button type="button" class="chip" data-policy="off" role="radio" aria-checked="false">OPTIONAL</button>
+            </div>
+            <p class="setting-note dim" id="rule-2fa-detail"></p>
+          </div>
+          <form class="setting rule-form" id="rule-issuer-form" autocomplete="off" novalidate>
+            <label class="setting-label" for="rule-issuer">AUTHENTICATOR NAME:</label>
+            <div class="setting-options rule-row">
+              <input id="rule-issuer" class="field" maxlength="64" spellcheck="false" required>
+              <button type="submit" class="btn">[ SAVE ]</button>
+            </div>
+            <p class="setting-note dim">What authenticator apps show next to the code, e.g. “Inkult (home)” to tell
+               several servers apart. Only apps set up after the change show the new name.</p>
+          </form>
+          <form class="setting rule-form" id="rule-length-form" autocomplete="off" novalidate>
+            <label class="setting-label" for="rule-length">LONGEST TRACK:</label>
+            <div class="setting-options rule-row">
+              <input id="rule-length" class="field" maxlength="8" inputmode="numeric" placeholder="m:ss" spellcheck="false" required>
+              <button type="submit" class="btn">[ SAVE ]</button>
+            </div>
+            <p class="setting-note dim">Longer uploads are almost always mixes or sets: they are hidden from search,
+               artist pages and Soulseek results, and refused when downloaded. Minutes:seconds, or 0 for no limit.
+               Files already in the library are not touched.</p>
+          </form>
+        </div>
+        <h3 class="admin-heading">CREW MANIFEST</h3>
+        <form id="crew-form" class="form-grid crew-form" autocomplete="off" novalidate>
+          <p class="form-wide dim">SIGN ON A NEW CREW MEMBER:</p>
+          <p class="form-wide dim setting-note" id="crew-form-note">Inkult generates a temporary password for you to
+             hand over. At their first login they must choose their own password.</p>
+          <label for="crew-user" class="prompt">HANDLE&gt;</label>
+          <input id="crew-user" class="field" maxlength="32" autocapitalize="none" spellcheck="false" required>
+          <span class="prompt">RANK&gt;</span>
+          <div class="chips crew-rank" role="radiogroup" aria-label="Rank">
+            <button type="button" class="chip active" data-role="pirate" role="radio" aria-checked="true">PIRATE</button>
+            <button type="button" class="chip" data-role="captain" role="radio" aria-checked="false">CAPTAIN</button>
+          </div>
+          <button type="submit" class="btn btn-primary form-wide">[ SIGN ON ]</button>
+        </form>
+        <div id="crew" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <footer class="tagline">
+      <p>4 THA KULTUR.</p>
+    </footer>
+  </div>
+
+  <footer class="player idle" id="player" aria-label="Player">
+    <!-- Folds the player into a small tab and back (app.js, setupPlayerFold). -->
+    <button type="button" class="icon-btn player-fold" id="player-fold" aria-expanded="true" aria-label="Hide player" title="Hide player"><span aria-hidden="true">v</span></button>
+    <div class="np">
+      <img class="art" id="np-art" alt="">
+      <div class="np-text">
+        <div class="np-label">NOW PLAYING:</div>
+        <div class="title" id="np-title">NOTHING PLAYING</div>
+        <div class="subtitle" id="np-artist">PRESS [&gt;] ON ANY TRACK TO LISTEN</div>
+        <div class="np-source" id="np-source"></div>
+      </div>
+    </div>
+    <div class="transport">
+      <!-- Both icons stay in the button and CSS shows one (.playing), so the
+           button keeps one size and nothing beside it shifts. -->
+      <button type="button" class="play-toggle" id="play-toggle" aria-label="Play" disabled>
+        <svg class="pt-icon pt-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" fill="currentColor"/></svg>
+        <svg class="pt-icon pt-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h3.2v11H3.5zM9.3 2.5h3.2v11H9.3z" fill="currentColor"/></svg>
+      </button>
+      <div class="seek-row">
+        <span class="time" id="time-current">0:00</span>
+        <div class="wave disabled" id="seek" role="slider" tabindex="-1" aria-label="Position"
+             aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-disabled="true">
+          <canvas id="wave-canvas" aria-hidden="true"></canvas>
+          <span class="wave-tip" id="wave-tip" aria-hidden="true" hidden></span>
+        </div>
+        <span class="time" id="time-total">0:00</span>
+      </div>
+    </div>
+    <div class="volume">
+      <button type="button" class="icon-btn" id="mute" aria-label="Mute"></button>
+      <input type="range" id="volume" class="slider" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+    </div>
+    <audio id="audio" preload="auto"></audio>
+  </footer>
+  </div>
+
+  <dialog class="dialog" id="dialog" aria-labelledby="dialog-title">
+    <form method="dialog" id="dialog-form" class="form-grid" novalidate>
+      <h2 id="dialog-title" class="box-title form-wide"></h2>
+      <p id="dialog-text" class="form-wide"></p>
+      <div id="dialog-extra" class="dialog-extra form-wide"></div>
+      <div id="dialog-fields" class="form-rows form-wide"></div>
+      <p class="error-line form-wide" id="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions form-wide">
+        <button type="button" class="btn" id="dialog-cancel">[ CANCEL ]</button>
+        <button type="submit" class="btn btn-primary" id="dialog-submit">[ OK ]</button>
+      </div>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="page-scrollbar" id="page-scrollbar" aria-hidden="true" hidden><i></i></div>
+  <div class="cursor-fx" id="cursor-fx" aria-hidden="true" hidden><i></i></div>
+</body>
+</html>
