@@ -403,6 +403,11 @@
           <h2 id="downloads-title" class="box-title">TRANSFER QUEUE: /INCOMING/</h2>
           <button type="button" class="btn" id="clear-finished">[ CLEAR FINISHED ]</button>
         </div>
+        <div class="chips" id="jobs-scope" role="radiogroup" aria-label="Show" hidden>
+          <span class="dim">SHOW:</span>
+          <button type="button" class="chip active" data-scope="mine" role="radio" aria-checked="true">MY TRANSFERS</button>
+          <button type="button" class="chip" data-scope="all" role="radio" aria-checked="false">ENTIRE CREW</button>
+        </div>
         <div id="jobs" aria-live="polite"></div>
       </section>
 

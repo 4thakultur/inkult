@@ -190,14 +190,14 @@ pub struct RemoveRequest {
     pub scope: LibraryScope,
 }
 
-/// Which part of the shared library to list.
+/// Which part of the shared library (or download queue) to act on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LibraryScope {
-    /// Tracks the user downloaded.
+    /// Tracks (or downloads) the user asked for.
     #[default]
     Mine,
-    /// Everything on disk (captains only).
+    /// Everything on disk, or every queued job (captains only).
     All,
 }
 
@@ -687,11 +687,15 @@ impl App {
         Ok(EnqueueResponse { job_ids, warning })
     }
 
-    fn viewer(actor: &User) -> Viewer {
-        if actor.role.is_captain() {
-            Viewer::All
-        } else {
-            Viewer::User(actor.id)
+    /// Captains see their own jobs like anyone else unless they ask for
+    /// the whole queue.
+    fn viewer(actor: &User, scope: LibraryScope) -> Result<Viewer, AppError> {
+        match scope {
+            LibraryScope::Mine => Ok(Viewer::User(actor.id)),
+            LibraryScope::All => {
+                Self::require_captain(actor)?;
+                Ok(Viewer::All)
+            }
         }
     }
 
@@ -712,37 +716,45 @@ impl App {
         list
     }
 
-    /// Captains see every job and who asked for it; pirates their own.
-    pub async fn jobs(&self, actor: &User) -> Vec<JobView> {
-        let jobs = self.jobs.list(Self::viewer(actor));
+    /// The actor's jobs, or (captains, `LibraryScope::All`) every job.
+    /// Captains also see who asked for each one.
+    pub async fn jobs(&self, actor: &User, scope: LibraryScope) -> Result<Vec<JobView>, AppError> {
+        let jobs = self.jobs.list(Self::viewer(actor, scope)?);
         if !actor.role.is_captain() {
-            return jobs
+            return Ok(jobs
                 .into_iter()
                 .map(|job| JobView {
                     job,
                     requested_by: None,
                 })
-                .collect();
+                .collect());
         }
         let names = self.auth.usernames().await;
-        jobs.into_iter()
+        Ok(jobs
+            .into_iter()
             .map(|job| JobView {
                 requested_by: Some(Self::names(&names, &job.requesters)),
                 job,
             })
-            .collect()
+            .collect())
     }
 
-    pub fn cancel_job(&self, actor: &User, id: JobId) -> Result<(), AppError> {
-        if self.jobs.cancel(id, Self::viewer(actor)) {
+    /// In `LibraryScope::Mine` a captain only withdraws from a job shared
+    /// with others, like a pirate; `All` stops it for everyone.
+    pub fn cancel_job(&self, actor: &User, id: JobId, scope: LibraryScope) -> Result<(), AppError> {
+        if self.jobs.cancel(id, Self::viewer(actor, scope)?) {
             Ok(())
         } else {
             Err(AppError::NotFound)
         }
     }
 
-    pub fn clear_finished_jobs(&self, actor: &User) -> usize {
-        self.jobs.clear_finished(Self::viewer(actor))
+    pub fn clear_finished_jobs(
+        &self,
+        actor: &User,
+        scope: LibraryScope,
+    ) -> Result<usize, AppError> {
+        Ok(self.jobs.clear_finished(Self::viewer(actor, scope)?))
     }
 
     fn can_access(actor: &User, entry: &LibraryEntry) -> bool {
@@ -1440,4 +1452,44 @@ impl<'a> ConversionOptions<'a> {
 pub struct LibraryFile {
     pub path: std::path::PathBuf,
     pub file_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(id: u64, role: Role) -> User {
+        User {
+            id: UserId(id),
+            username: format!("user{id}"),
+            role,
+            created_at: 0,
+            locked_at: None,
+            two_factor_enabled: true,
+            password_temporary: false,
+            temporary_password_expires_at: None,
+        }
+    }
+
+    #[test]
+    fn download_queue_defaults_to_own_jobs_for_everyone() {
+        let captain = user(1, Role::Captain);
+        let pirate = user(2, Role::Pirate);
+        assert_eq!(
+            App::viewer(&captain, LibraryScope::Mine).ok(),
+            Some(Viewer::User(UserId(1)))
+        );
+        assert_eq!(
+            App::viewer(&pirate, LibraryScope::Mine).ok(),
+            Some(Viewer::User(UserId(2)))
+        );
+        assert_eq!(
+            App::viewer(&captain, LibraryScope::All).ok(),
+            Some(Viewer::All)
+        );
+        assert!(matches!(
+            App::viewer(&pirate, LibraryScope::All),
+            Err(AppError::Forbidden)
+        ));
+    }
 }

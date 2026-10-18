@@ -64,6 +64,7 @@ const state = {
   started: false,
   view: "search",
   libraryScope: "mine",
+  jobsScope: "mine",
   crewRole: "pirate",
   provider: "all",
   /** Query string of the last provider search, if the results show one. */
@@ -1337,7 +1338,7 @@ function jobCard(job) {
   const cancel = TERMINAL.has(job.state) ? saveButton(job) : h("button", {
     class: "icon-btn", type: "button", title: "Cancel", "aria-label": `Cancel ${job.title}`,
     onclick: async () => {
-      try { await api(`/api/downloads/${job.id}/cancel`, { method: "POST" }); await pollJobs(); }
+      try { await api(`/api/downloads/${job.id}/cancel?scope=${jobsScope()}`, { method: "POST" }); await pollJobs(); }
       catch (err) { toast(err.message, true); }
     },
   }, icon("close"));
@@ -1406,9 +1407,17 @@ function refreshOnTransitions(previous, jobs) {
   }
 }
 
+/** Captains may look at every crew member's transfers; everyone else sees their own. */
+function jobsScope() {
+  return isCaptain() ? state.jobsScope : "mine";
+}
+
 async function pollJobs() {
   try {
-    const jobs = await api("/api/downloads");
+    const scope = jobsScope();
+    const jobs = await api(`/api/downloads?scope=${scope}`);
+    // The SHOW chips changed while this was in flight: a newer poll owns the list.
+    if (scope !== jobsScope()) return;
     refreshOnTransitions(state.jobStates, jobs);
     state.jobStates = new Map(jobs.map((job) => [job.id, job.state]));
     state.jobs = jobs;
@@ -5271,6 +5280,7 @@ function enterApp(user) {
   const captain = isCaptain();
   $('.nav-item[data-view="admin"]').hidden = !captain;
   $("#library-scope").hidden = !captain;
+  $("#jobs-scope").hidden = !captain;
   if (!state.started) {
     state.started = true;
     tickClock();
@@ -5329,6 +5339,12 @@ document.addEventListener("DOMContentLoaded", () => {
     state.library = [];
     loadLibrary();
   });
+  chipGroup("#jobs-scope .chip", (chip) => {
+    state.jobsScope = chip.dataset.scope;
+    // A different set of jobs: their states are not transitions.
+    state.jobStates = null;
+    pollJobs();
+  });
   chipGroup(".crew-rank .chip", (chip) => { state.crewRole = chip.dataset.role; });
   for (const chip of document.querySelectorAll("#rule-2fa .chip")) {
     chip.addEventListener("click", () => pickTwoFactorRule(chip.dataset.policy));
@@ -5368,7 +5384,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupSearchFilters();
   $("#library-filter").addEventListener("input", renderLibrary);
   $("#clear-finished").addEventListener("click", async () => {
-    try { await api("/api/downloads/finished", { method: "DELETE" }); await pollJobs(); }
+    try { await api(`/api/downloads/finished?scope=${jobsScope()}`, { method: "DELETE" }); await pollJobs(); }
     catch (err) { toast(err.message, true); }
   });
   $("#room-new").addEventListener("submit", roomsCreate);

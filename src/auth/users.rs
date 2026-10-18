@@ -33,7 +33,7 @@ impl std::fmt::Display for UserId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// Administrator: manages the crew and sees every job and library file.
+    /// Administrator: manages the crew and can see every job and library file.
     Captain,
     /// Regular user: sees only their own downloads and library.
     Pirate,

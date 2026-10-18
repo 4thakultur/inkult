@@ -350,7 +350,7 @@ Inkult always requires a login. There are two ranks:
 
 | Rank        | Can |
 |-------------|-----|
-| **Captain** | everything below, plus manage the crew (add, promote/demote, reset passwords and two-factor login, unlock, delete), change server rules, see every download and the whole library with who owns each track |
+| **Captain** | everything below, plus manage the crew (add, promote/demote, reset passwords and two-factor login, unlock, delete), change server rules; their own downloads and library by default, with a SHOW switch to every download and the whole library with who owns each track |
 | **Pirate**  | search, listen, download, chat; sees only their own downloads and library |
 
 **First start.** With no accounts yet, Inkult prints a one-time setup code to

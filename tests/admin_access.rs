@@ -390,6 +390,17 @@ fn admin_operations(t: &Targets) -> Vec<(Method, String, Option<Value>)> {
             Some(json!({ "totp_issuer": "pwned" })),
         ),
         (Method::GET, "/api/library?scope=all".into(), None),
+        (Method::GET, "/api/downloads?scope=all".into(), None),
+        (
+            Method::DELETE,
+            "/api/downloads/finished?scope=all".into(),
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/downloads/1/cancel?scope=all".into(),
+            None,
+        ),
         (
             Method::POST,
             "/api/library/remove".into(),
@@ -904,5 +915,6 @@ async fn pirates_never_see_server_paths() {
             search.text
         )
     });
+
     f.assert_none();
 }

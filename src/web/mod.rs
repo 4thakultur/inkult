@@ -870,39 +870,43 @@ async fn enqueue(
     Ok((StatusCode::ACCEPTED, Json(app.enqueue(&user, body).await?)))
 }
 
+#[derive(Deserialize)]
+struct ScopeParams {
+    #[serde(default)]
+    scope: LibraryScope,
+}
+
 async fn list_jobs(
     State(app): State<AppState>,
     Extension(user): Extension<User>,
-) -> impl IntoResponse {
-    Json(app.jobs(&user).await)
+    Query(params): Query<ScopeParams>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(app.jobs(&user, params.scope).await?))
 }
 
 async fn cancel_job(
     State(app): State<AppState>,
     Extension(user): Extension<User>,
     Path(id): Path<JobId>,
+    Query(params): Query<ScopeParams>,
 ) -> Result<impl IntoResponse, AppError> {
-    app.cancel_job(&user, id)?;
+    app.cancel_job(&user, id, params.scope)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn clear_finished(
     State(app): State<AppState>,
     Extension(user): Extension<User>,
-) -> impl IntoResponse {
-    Json(json!({ "removed": app.clear_finished_jobs(&user) }))
-}
-
-#[derive(Deserialize)]
-struct LibraryParams {
-    #[serde(default)]
-    scope: LibraryScope,
+    Query(params): Query<ScopeParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let removed = app.clear_finished_jobs(&user, params.scope)?;
+    Ok(Json(json!({ "removed": removed })))
 }
 
 async fn library(
     State(app): State<AppState>,
     Extension(user): Extension<User>,
-    Query(params): Query<LibraryParams>,
+    Query(params): Query<ScopeParams>,
 ) -> Result<impl IntoResponse, AppError> {
     Ok(Json(app.library(&user, params.scope).await?))
 }

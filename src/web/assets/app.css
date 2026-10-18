@@ -1596,7 +1596,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   .search-bar { padding: 8px 0; }
   .chips { gap: 4px 16px; }
   /* Lets the three sources share one row. */
-  #view-search > .chips > .dim, #library-scope > .dim { display: none; }
+  #view-search > .chips > .dim, #library-scope > .dim, #jobs-scope > .dim { display: none; }
 
   /* Forms: prompts above their fields, so the field gets the full width. */
   .form-grid { grid-template-columns: minmax(0, 1fr); gap: 4px; }
