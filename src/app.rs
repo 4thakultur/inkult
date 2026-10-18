@@ -37,7 +37,8 @@ use crate::rooms::{MessageView, RoomError, RoomId, RoomView, Rooms, SharedTrack,
 use crate::search::{FilterSummary, RawFilters, SearchFilters};
 use crate::settings::{ServerSettings, Settings, SettingsError};
 use crate::soulseek::{
-    AccountStatus, Session as SoulseekSession, Soulseek, SoulseekError, UpgradeWanted,
+    AccountStatus, MemberRules, Override, Session as SoulseekSession, Soulseek, SoulseekAccess,
+    SoulseekError, UpgradeWanted,
 };
 use crate::tools::ToolStatus;
 use crate::tools::ffmpeg::Ffmpeg;
@@ -289,11 +290,17 @@ pub struct CrewMember {
     pub tracks: usize,
     /// The 2FA policy requires two-factor login and it is not set up yet.
     pub two_factor_pending: bool,
+    /// The captains' choices for this member over the Soulseek switches.
+    pub soulseek: MemberRules,
+    /// What the switches and those choices add up to.
+    pub soulseek_allowed: bool,
+    pub soulseek_sharing_allowed: bool,
 }
 
 /// A captain's change to the server settings; fields left out stay as
-/// they are. Relaxing the 2FA policy needs the captain's password (and a
-/// code): a hijacked session must not be able to switch it off.
+/// they are. Relaxing the 2FA policy or allowing Soulseek sharing needs the
+/// captain's password (and a code): a hijacked session must not be able to
+/// switch 2FA off, or start uploading from the host's address.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsUpdate {
@@ -303,6 +310,10 @@ pub struct SettingsUpdate {
     pub totp_issuer: Option<String>,
     #[serde(default)]
     pub max_track_secs: Option<u32>,
+    #[serde(default)]
+    pub soulseek: Option<SoulseekAccess>,
+    #[serde(default)]
+    pub soulseek_sharing: Option<SoulseekAccess>,
     #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
@@ -334,6 +345,17 @@ pub struct UserUpdate {
     /// Remove two-factor login (lost phone).
     #[serde(default)]
     pub reset_2fa: bool,
+    /// Override the Soulseek switch for this member.
+    #[serde(default)]
+    pub soulseek: Option<Override>,
+    /// Override the Soulseek sharing switch for this member.
+    #[serde(default)]
+    pub soulseek_sharing: Option<Override>,
+    /// Confirms letting the member share more (with `code`).
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 /// Server status for the UI. Server paths and tool details are for
@@ -862,7 +884,7 @@ impl App {
         }
         let all = self.library.entries().await;
         let options = ConversionOptions::new(&all, actor.id);
-        let soulseek_ready = self.soulseek.require(actor.id).is_ok();
+        let soulseek_block = self.upgrade_session(actor).err().map(|e| e.to_string());
         let names = if actor.role.is_captain() {
             Some(self.auth.usernames().await)
         } else {
@@ -874,7 +896,7 @@ impl App {
             .map(|entry| {
                 let owned_by = names.as_ref().map(|n| Self::names(n, &entry.owners));
                 let convert_to = options.for_entry(entry);
-                let upgrade = options.upgrade_for(entry, soulseek_ready);
+                let upgrade = options.upgrade_for(entry, soulseek_block.as_deref());
                 let mut entry = entry.clone();
                 // "Added" in the viewer's own library is when they got the
                 // file, which for a shared file can be long after it was
@@ -1036,6 +1058,11 @@ impl App {
 
     /// The actor's Soulseek session, which quality upgrades search with.
     fn upgrade_session(&self, actor: &User) -> Result<Arc<SoulseekSession>, AppError> {
+        self.soulseek_allowed(actor).map_err(|_| {
+            AppError::BadRequest(
+                "Soulseek is turned off on this server, and upgrades search it".into(),
+            )
+        })?;
         self.soulseek.require(actor.id).map_err(|_| {
             AppError::BadRequest(
                 "sign in to Soulseek in [2] SOULSEEK first; upgrades search it with your account"
@@ -1417,8 +1444,23 @@ impl App {
     // Each Inkult user has their own Soulseek account and session; every
     // operation acts on the actor's own session only.
 
+    /// Whether the captains' rules let the actor use Soulseek.
+    fn soulseek_allowed(&self, actor: &User) -> Result<(), AppError> {
+        if self.settings.soulseek_rules().may_use(actor.id, actor.role) {
+            Ok(())
+        } else {
+            Err(SoulseekError::Disabled.into())
+        }
+    }
+
     pub async fn soulseek_status(&self, actor: &User) -> AccountStatus {
-        self.soulseek.status(actor.id).await
+        if self.soulseek_allowed(actor).is_err() {
+            return self.soulseek.disabled_status(actor.id, actor.role).await;
+        }
+        // Soulseek is back on for them after a pause: reconnect a
+        // remembered account (only full-access sessions get here).
+        self.soulseek.resume_suspended(actor.id, actor.role);
+        self.soulseek.status(actor.id, actor.role).await
     }
 
     pub async fn soulseek_sign_in(
@@ -1428,9 +1470,10 @@ impl App {
         password: &str,
         remember: bool,
     ) -> Result<AccountStatus, AppError> {
+        self.soulseek_allowed(actor)?;
         Ok(self
             .soulseek
-            .sign_in(actor.id, username, password, remember)
+            .sign_in(actor.id, actor.role, username, password, remember)
             .await?)
     }
 
@@ -1440,6 +1483,7 @@ impl App {
 
     /// The actor's signed-in Soulseek session.
     pub fn soulseek(&self, actor: &User) -> Result<Arc<SoulseekSession>, AppError> {
+        self.soulseek_allowed(actor)?;
         Ok(self.soulseek.require(actor.id)?)
     }
 
@@ -1596,9 +1640,12 @@ impl App {
     /// the user's remembered Soulseek account reconnect: until then the
     /// person at the keyboard has not proven to be the account's owner.
     fn after_login(&self, login: &Login) {
-        if !login.password_change_required && !self.auth.two_factor_enrollment_required(&login.user)
+        if !login.password_change_required
+            && !self.auth.two_factor_enrollment_required(&login.user)
+            && self.soulseek_allowed(&login.user).is_ok()
         {
-            self.soulseek.resume_remembered(login.user.id);
+            self.soulseek
+                .resume_remembered(login.user.id, login.user.role);
         }
     }
 
@@ -1702,6 +1749,8 @@ impl App {
                 *counts.entry(owner).or_default() += 1;
             }
         }
+        let settings = self.settings.get().await;
+        let rules = self.settings.soulseek_rules();
         Ok(self
             .auth
             .list()
@@ -1710,6 +1759,13 @@ impl App {
             .map(|user| CrewMember {
                 tracks: counts.get(&user.id).copied().unwrap_or(0),
                 two_factor_pending: self.auth.two_factor_enrollment_required(&user),
+                soulseek: settings
+                    .soulseek_members
+                    .get(&user.id)
+                    .copied()
+                    .unwrap_or_default(),
+                soulseek_allowed: rules.may_use(user.id, user.role),
+                soulseek_sharing_allowed: rules.may_share(user.id, user.role),
                 user,
             })
             .collect())
@@ -1741,23 +1797,51 @@ impl App {
         if let Some(secs) = update.max_track_secs {
             next.max_track_secs = secs;
         }
+        if let Some(access) = update.soulseek {
+            next.soulseek = access;
+        }
+        if let Some(sharing) = update.soulseek_sharing {
+            next.soulseek_sharing = sharing;
+        }
+        self.commit_settings(
+            actor,
+            &mut current,
+            next,
+            update.password.as_deref(),
+            update.code.as_deref(),
+        )
+        .await
+    }
+
+    /// Check, save and apply `next` in place of `current` (whose lock the
+    /// caller holds throughout, so two captains' changes cannot interleave).
+    /// `password` and `code` confirm a change that loosens security.
+    async fn commit_settings(
+        &self,
+        actor: &User,
+        current: &mut tokio::sync::MutexGuard<'_, ServerSettings>,
+        next: ServerSettings,
+        password: Option<&str>,
+        code: Option<&str>,
+    ) -> Result<ServerSettings, AppError> {
         next.validate().map_err(AppError::BadRequest)?;
-        if next == *current {
+        if next == **current {
             return Ok(next);
         }
         let relaxed = current.two_factor.is_weakened_by(next.two_factor);
-        if relaxed {
-            let password = update.password.as_deref().ok_or_else(|| {
-                AppError::BadRequest(
-                    "relaxing the two-factor rule needs your password and a code".into(),
-                )
+        let sharing_widened = current.widens_sharing(&next);
+        if relaxed || sharing_widened {
+            let password = password.ok_or_else(|| {
+                AppError::BadRequest(if relaxed {
+                    "relaxing the two-factor rule needs your password and a code".into()
+                } else {
+                    "allowing more Soulseek sharing needs your password and a code".into()
+                })
             })?;
-            self.auth
-                .confirm_identity(actor, password, update.code.as_deref())
-                .await?;
+            self.auth.confirm_identity(actor, password, code).await?;
         }
-        let previous = current.clone();
-        self.settings.replace(&mut current, next.clone()).await?;
+        let previous = (**current).clone();
+        self.settings.replace(current, next.clone()).await?;
         self.auth.set_config(next.auth());
         if relaxed {
             tracing::warn!(captain = %actor.username, from = ?previous.two_factor, to = ?next.two_factor, "two-factor rule relaxed");
@@ -1770,7 +1854,70 @@ impl App {
         if previous.max_track_secs != next.max_track_secs {
             tracing::info!(captain = %actor.username, max_track_secs = next.max_track_secs, "track length limit changed");
         }
+        // Still under the settings lock, so a captain flipping a rule back
+        // cannot overtake the sessions being brought in line with it.
+        if previous.soulseek != next.soulseek {
+            tracing::warn!(captain = %actor.username, from = ?previous.soulseek, to = ?next.soulseek, "Soulseek access changed");
+        }
+        if previous.soulseek_sharing != next.soulseek_sharing {
+            tracing::warn!(captain = %actor.username, from = ?previous.soulseek_sharing, to = ?next.soulseek_sharing, "Soulseek sharing rule changed");
+        }
+        let members_changed = previous.soulseek_members != next.soulseek_members;
+        if previous.soulseek != next.soulseek || members_changed {
+            let rules = self.settings.soulseek_rules();
+            for user in self.auth.list().await {
+                if !rules.may_use(user.id, user.role) {
+                    self.soulseek.suspend(user.id).await;
+                }
+            }
+        }
+        if previous.soulseek_sharing != next.soulseek_sharing || members_changed {
+            self.soulseek.apply_sharing_rule().await;
+        }
         Ok(next)
+    }
+
+    /// A captain's choice for one member over the Soulseek switches.
+    async fn set_member_rules(
+        &self,
+        actor: &User,
+        id: UserId,
+        update: &UserUpdate,
+    ) -> Result<(), AppError> {
+        let user = self
+            .auth
+            .list()
+            .await
+            .into_iter()
+            .find(|u| u.id == id)
+            .ok_or(AppError::NotFound)?;
+        let mut current = self.settings.lock().await;
+        let mut next = current.clone();
+        let mut member = next.soulseek_members.get(&id).copied().unwrap_or_default();
+        if let Some(choice) = update.soulseek {
+            member.soulseek = choice;
+        }
+        if let Some(choice) = update.soulseek_sharing {
+            member.sharing = choice;
+        }
+        if member.is_default() {
+            next.soulseek_members.remove(&id);
+        } else {
+            next.soulseek_members.insert(id, member);
+        }
+        let changed = next.soulseek_members != current.soulseek_members;
+        self.commit_settings(
+            actor,
+            &mut current,
+            next,
+            update.password.as_deref(),
+            update.code.as_deref(),
+        )
+        .await?;
+        if changed {
+            tracing::warn!(captain = %actor.username, user = %user.username, soulseek = ?member.soulseek, sharing = ?member.sharing, "Soulseek choice for a member changed");
+        }
+        Ok(())
     }
 
     pub async fn create_user(&self, actor: &User, new: NewUser) -> Result<NewAccount, AppError> {
@@ -1796,6 +1943,11 @@ impl App {
                     .into(),
             ));
         }
+        // First: it is the change that may be refused for want of the
+        // captain's password, and nothing else should happen then.
+        if update.soulseek.is_some() || update.soulseek_sharing.is_some() {
+            self.set_member_rules(actor, id, &update).await?;
+        }
         let temporary_password = if update.reset_password {
             Some(self.auth.reset_password(id).await?)
         } else {
@@ -1803,6 +1955,7 @@ impl App {
         };
         if let Some(role) = update.role {
             self.auth.set_role(id, role).await?;
+            self.soulseek.member_changed(id, role).await;
         }
         if update.unlock {
             self.auth.unlock(id).await?;
@@ -1824,6 +1977,16 @@ impl App {
             ));
         }
         self.auth.delete(id).await?;
+        {
+            let mut current = self.settings.lock().await;
+            if current.soulseek_members.contains_key(&id) {
+                let mut next = current.clone();
+                next.soulseek_members.remove(&id);
+                // Narrows only, so it never needs confirming.
+                self.commit_settings(actor, &mut current, next, None, None)
+                    .await?;
+            }
+        }
         self.jobs.forget_user(id);
         self.soulseek.forget_user(id).await;
         self.rooms.forget_user(id).await;
@@ -1888,7 +2051,12 @@ impl<'a> ConversionOptions<'a> {
 impl ConversionOptions<'_> {
     /// Whether the user can ask for a quality upgrade of `entry`'s track.
     /// Soulseek tracks get none: they are already someone's best copy.
-    fn upgrade_for(&self, entry: &LibraryEntry, soulseek_ready: bool) -> Option<UpgradeOption> {
+    /// `soulseek_block` says why the user cannot search Soulseek, if so.
+    fn upgrade_for(
+        &self,
+        entry: &LibraryEntry,
+        soulseek_block: Option<&str>,
+    ) -> Option<UpgradeOption> {
         if entry.key.provider == ProviderKind::Soulseek {
             return None;
         }
@@ -1900,15 +2068,14 @@ impl ConversionOptions<'_> {
                     false,
                     format!("already lossless ({})", best.quality.summary),
                 ),
-                _ if !soulseek_ready => (
-                    false,
-                    "sign in to Soulseek in [2] SOULSEEK first".to_owned(),
-                ),
-                _ => (
-                    true,
-                    "Find a lossless copy (FLAC, WAV, AIFF) on Soulseek and add it as another format"
-                        .to_owned(),
-                ),
+                _ => match soulseek_block {
+                    Some(reason) => (false, reason.to_owned()),
+                    None => (
+                        true,
+                        "Find a lossless copy (FLAC, WAV, AIFF) on Soulseek and add it as another format"
+                            .to_owned(),
+                    ),
+                },
             },
         };
         Some(UpgradeOption {
@@ -1985,9 +2152,9 @@ mod tests {
         );
         let entries = [opus.clone()];
         let options = ConversionOptions::new(&entries, UserId(1));
-        let offer = options.upgrade_for(&opus, true).unwrap();
+        let offer = options.upgrade_for(&opus, None).unwrap();
         assert!(offer.available);
-        let offer = options.upgrade_for(&opus, false).unwrap();
+        let offer = options.upgrade_for(&opus, Some("not signed in")).unwrap();
         assert!(!offer.available, "needs a Soulseek session");
         // Lossless is not a conversion target.
         assert!(
@@ -2006,7 +2173,7 @@ mod tests {
         let entries = [slsk.clone()];
         assert!(
             ConversionOptions::new(&entries, UserId(1))
-                .upgrade_for(&slsk, true)
+                .upgrade_for(&slsk, None)
                 .is_none()
         );
 
@@ -2018,7 +2185,7 @@ mod tests {
         );
         let entries = [wav.clone()];
         let offer = ConversionOptions::new(&entries, UserId(1))
-            .upgrade_for(&wav, true)
+            .upgrade_for(&wav, None)
             .unwrap();
         assert!(!offer.available, "already lossless");
 
@@ -2031,10 +2198,10 @@ mod tests {
         );
         let entries = [opus.clone(), flac];
         let options = ConversionOptions::new(&entries, UserId(1));
-        let offer = options.upgrade_for(&opus, false).unwrap();
+        let offer = options.upgrade_for(&opus, Some("not signed in")).unwrap();
         assert!(offer.available);
         let options = ConversionOptions::new(&entries, UserId(2));
-        assert!(!options.upgrade_for(&opus, true).unwrap().available);
+        assert!(!options.upgrade_for(&opus, None).unwrap().available);
     }
 
     #[test]

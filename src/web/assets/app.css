@@ -1069,6 +1069,11 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
 .crew-row .twofa-tag { color: var(--mid); }
 .crew-tracks { color: var(--mid); font-variant-numeric: tabular-nums; }
 .crew-actions { display: flex; gap: 4px 10px; flex-wrap: wrap; justify-content: flex-end; }
+.crew-slsk { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 28px; }
+.crew-slsk-choice { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.crew-slsk-label { color: var(--mid); }
+.crew-slsk .chips { margin: 0; }
+.crew-slsk-outcome { white-space: nowrap; }
 .owners { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: none; }
 
 .filter-wrap { display: flex; align-items: center; gap: 8px; border-bottom: 1px dashed var(--line); width: 300px; max-width: 100%; }

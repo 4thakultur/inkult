@@ -17,8 +17,8 @@ use super::messages::{
 };
 use super::uploads::UploadState;
 use super::wire::{Reader, Writer, read_coded_frame, read_frame};
-use super::{Soulseek, SoulseekConfig};
-use crate::auth::UserId;
+use super::{ConnState, Soulseek, SoulseekAccess, SoulseekConfig, SoulseekError, SoulseekRules};
+use crate::auth::{Role, UserId};
 use crate::domain::length::{MaxTrackLength, TrackLengthLimit};
 use crate::domain::quality::{Codec, OutputFormat};
 use crate::library::Library;
@@ -53,12 +53,22 @@ fn silent_wav_of(frames: u32) -> Vec<u8> {
 
 /// Accepts one client, signs it in, answers address lookups with the fake
 /// peer's port and reports every other message.
+/// Accepts every sign-in, so a session that ended can connect again.
 async fn fake_server(
     listener: TcpListener,
     peer_port: u16,
     seen: mpsc::UnboundedSender<(u32, Vec<u8>)>,
 ) {
-    let (mut stream, _) = listener.accept().await.unwrap();
+    while let Ok((stream, _)) = listener.accept().await {
+        tokio::spawn(fake_server_client(stream, peer_port, seen.clone()));
+    }
+}
+
+async fn fake_server_client(
+    mut stream: TcpStream,
+    peer_port: u16,
+    seen: mpsc::UnboundedSender<(u32, Vec<u8>)>,
+) {
     let (code, _) = read_coded_frame(&mut stream, |_| 1 << 20).await.unwrap();
     assert_eq!(code, server_code::LOGIN);
     let mut ok = Writer::new();
@@ -141,6 +151,7 @@ fn free_port() -> u16 {
 
 struct Harness {
     soulseek: Arc<Soulseek>,
+    rules: SoulseekRules,
     library: Arc<Library>,
     peer_listener: TcpListener,
     our_port: u16,
@@ -166,12 +177,18 @@ async fn harness() -> Harness {
 
     let our_port = free_port();
     let staging = data.path().join("staging");
+    let rules = SoulseekRules::new(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Everyone,
+        Default::default(),
+    );
     let soulseek = Arc::new(
         Soulseek::new(
             SoulseekConfig {
                 server: server_addr.to_string(),
                 ports: vec![our_port],
                 upload_slots: 2,
+                rules: rules.clone(),
                 max_track_length: TrackLengthLimit::new(MaxTrackLength::DEFAULT),
                 staging_dir: staging.clone(),
                 store_path: data.path().join("soulseek.json"),
@@ -185,6 +202,7 @@ async fn harness() -> Harness {
     );
     Harness {
         soulseek,
+        rules,
         library,
         peer_listener,
         our_port,
@@ -199,7 +217,7 @@ async fn search_queue_resume_and_import() {
     let mut h = harness().await;
     let status = h
         .soulseek
-        .sign_in(ME, "digger", "secret", false)
+        .sign_in(ME, Role::Pirate, "digger", "secret", false)
         .await
         .unwrap();
     assert_eq!(status.listen_port, Some(h.our_port));
@@ -443,7 +461,7 @@ async fn quality_upgrade_finds_verifies_and_files_a_lossless_copy() {
         .unwrap();
 
     h.soulseek
-        .sign_in(ME, "digger", "secret", false)
+        .sign_in(ME, Role::Pirate, "digger", "secret", false)
         .await
         .unwrap();
     let session = h.soulseek.require(ME).unwrap();
@@ -663,7 +681,7 @@ async fn upload_one(h: &mut Harness, user: &str, path: &str, data: &[u8], token:
 async fn quality_upgrade_rejects_fake_lossless_and_tries_the_next_copy() {
     let mut h = harness().await;
     h.soulseek
-        .sign_in(ME, "digger", "secret", false)
+        .sign_in(ME, Role::Pirate, "digger", "secret", false)
         .await
         .unwrap();
     let session = h.soulseek.require(ME).unwrap();
@@ -783,10 +801,8 @@ async fn quality_upgrade_rejects_fake_lossless_and_tries_the_next_copy() {
     h.soulseek.shutdown().await;
 }
 
-#[tokio::test]
-async fn shares_library_for_browsing_and_uploads() {
-    let mut h = harness().await;
-    // Put a track into the user's library.
+/// Put a track into the user's library.
+async fn add_glue(h: &Harness) {
     let staged = h._dirs.1.path().join("track.wav");
     std::fs::write(&staged, silent_wav()).unwrap();
     let meta = crate::domain::metadata::TrackMetadata {
@@ -821,14 +837,20 @@ async fn shares_library_for_browsing_and_uploads() {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn shares_library_for_browsing_and_uploads() {
+    let mut h = harness().await;
+    add_glue(&h).await;
 
     h.soulseek
-        .sign_in(ME, "digger", "secret", true)
+        .sign_in(ME, Role::Pirate, "digger", "secret", true)
         .await
         .unwrap();
     let session = h.soulseek.require(ME).unwrap();
     assert!(!session.status().await.share_library);
-    session.set_sharing(true).await;
+    session.set_sharing(true).await.unwrap();
     let status = session.status().await;
     assert_eq!((status.shared_folders, status.shared_files), (1, 1));
     assert!(status.remembered);
@@ -934,8 +956,149 @@ async fn shares_library_for_browsing_and_uploads() {
     assert_eq!(upload.bytes, size);
 
     // Turning sharing off takes the files offline.
-    session.set_sharing(false).await;
+    session.set_sharing(false).await.unwrap();
     assert_eq!(session.status().await.shared_files, 0);
+    h.soulseek.shutdown().await;
+}
+
+/// Wait until the server is told we share `want` (folders, files).
+async fn shares_announced(seen: &mut mpsc::UnboundedReceiver<(u32, Vec<u8>)>, want: (u32, u32)) {
+    loop {
+        let body = next_server_message(seen, server_code::SHARED_FOLDERS_FILES).await;
+        let mut r = Reader::new(&body);
+        if (r.u32().unwrap(), r.u32().unwrap()) == want {
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn sharing_rule_takes_shares_offline_but_keeps_the_choice() {
+    let mut h = harness().await;
+    add_glue(&h).await;
+    h.soulseek
+        .sign_in(ME, Role::Pirate, "digger", "secret", false)
+        .await
+        .unwrap();
+    let session = h.soulseek.require(ME).unwrap();
+    session.set_sharing(true).await.unwrap();
+    shares_announced(&mut h.seen, (1, 1)).await;
+
+    // A captain disallows sharing.
+    h.rules.set(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Off,
+        Default::default(),
+    );
+    h.soulseek.apply_sharing_rule().await;
+    shares_announced(&mut h.seen, (0, 0)).await;
+    let status = session.status().await;
+    assert!(!status.sharing_allowed);
+    assert!(status.share_library, "the user's own choice is kept");
+    assert_eq!(status.shared_files, 0);
+    assert!(matches!(
+        session.set_sharing(true).await,
+        Err(SoulseekError::SharingDisabled)
+    ));
+
+    // Peers see nothing and cannot queue anything.
+    let mut bob = TcpStream::connect(("127.0.0.1", h.our_port)).await.unwrap();
+    let init = PeerInit::PeerInit {
+        username: "bob".into(),
+        kind: Some(super::messages::ConnKind::Peer),
+    };
+    bob.write_all(&init.encode()).await.unwrap();
+    bob.write_all(&PeerMessage::GetShareFileList.encode())
+        .await
+        .unwrap();
+    let PeerMessage::SharedFileList(dirs) = read_peer_message(&mut bob).await else {
+        panic!("expected a share list");
+    };
+    assert!(dirs.is_empty());
+    bob.write_all(
+        &PeerMessage::QueueUpload {
+            filename: "inkult\\Bicep\\Singles\\Glue.wav".into(),
+        }
+        .encode(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_peer_message(&mut bob).await,
+        PeerMessage::UploadDenied { reason, .. } if reason == "File not shared."
+    ));
+
+    // Captains only: still nothing from a pirate...
+    h.rules.set(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Captains,
+        Default::default(),
+    );
+    h.soulseek.apply_sharing_rule().await;
+    assert!(!session.status().await.sharing_allowed);
+    assert_eq!(session.status().await.shared_files, 0);
+    // ...until they are made a captain.
+    h.soulseek.member_changed(ME, Role::Captain).await;
+    shares_announced(&mut h.seen, (1, 1)).await;
+    assert!(session.status().await.sharing_allowed);
+    // And back to pirate.
+    h.soulseek.member_changed(ME, Role::Pirate).await;
+    shares_announced(&mut h.seen, (0, 0)).await;
+    // A captain lets this one pirate share.
+    h.rules.set(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Captains,
+        [(
+            ME,
+            super::MemberRules {
+                soulseek: super::Override::Auto,
+                sharing: super::Override::Allowed,
+            },
+        )]
+        .into(),
+    );
+    h.soulseek.apply_sharing_rule().await;
+    shares_announced(&mut h.seen, (1, 1)).await;
+
+    // Allowed for everyone: the user's choice applies without them doing
+    // anything.
+    h.rules.set(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Everyone,
+        Default::default(),
+    );
+    h.soulseek.apply_sharing_rule().await;
+    shares_announced(&mut h.seen, (1, 1)).await;
+    assert_eq!(session.status().await.shared_files, 1);
+    h.soulseek.shutdown().await;
+}
+
+#[tokio::test]
+async fn suspended_session_keeps_the_account_and_resumes() {
+    let h = harness().await;
+    h.soulseek
+        .sign_in(ME, Role::Pirate, "digger", "secret", true)
+        .await
+        .unwrap();
+    h.soulseek.suspend(ME).await;
+    assert!(matches!(
+        h.soulseek.require(ME),
+        Err(SoulseekError::NotSignedIn)
+    ));
+    let status = h.soulseek.disabled_status(ME, Role::Pirate).await;
+    assert_eq!(status.state, ConnState::Disabled);
+    assert_eq!(status.username.as_deref(), Some("digger"));
+
+    h.soulseek.resume_suspended(ME, Role::Pirate);
+    let session = eventually("reconnect", || h.soulseek.require(ME).ok()).await;
+    assert_eq!(session.username(), "digger");
+    assert!(session.status().await.remembered);
+
+    // Only a suspended session is resumed, and only once.
+    h.soulseek.sign_out(ME).await;
+    h.soulseek.resume_suspended(ME, Role::Pirate);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(h.soulseek.require(ME).is_err());
     h.soulseek.shutdown().await;
 }
 
@@ -964,6 +1127,11 @@ async fn rejected_sign_in_is_reported_and_nothing_keeps_running() {
             server: addr.to_string(),
             ports: vec![port],
             upload_slots: 1,
+            rules: SoulseekRules::new(
+                SoulseekAccess::Everyone,
+                SoulseekAccess::Everyone,
+                Default::default(),
+            ),
             max_track_length: TrackLengthLimit::new(MaxTrackLength::DEFAULT),
             staging_dir: dir.path().join("staging"),
             store_path: dir.path().join("soulseek.json"),
@@ -975,7 +1143,7 @@ async fn rejected_sign_in_is_reported_and_nothing_keeps_running() {
     .await
     .unwrap();
     let error = soulseek
-        .sign_in(ME, "digger", "wrong", true)
+        .sign_in(ME, Role::Pirate, "digger", "wrong", true)
         .await
         .unwrap_err();
     assert_eq!(
@@ -1007,16 +1175,16 @@ async fn remembered_account_reconnects_only_when_its_user_logs_in() {
 
     // Another user logging in does not sign this account in.
     let other = UserId(2);
-    h.soulseek.resume_remembered(other);
+    h.soulseek.resume_remembered(other, Role::Pirate);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(h.soulseek.session(ME).is_none());
     assert!(h.soulseek.session(other).is_none());
 
     // Its own user logging in does, once; a second login keeps the session.
-    h.soulseek.resume_remembered(ME);
+    h.soulseek.resume_remembered(ME, Role::Pirate);
     let session = eventually("the remembered sign-in", || h.soulseek.session(ME)).await;
     assert_eq!(session.username(), "digger");
-    h.soulseek.resume_remembered(ME);
+    h.soulseek.resume_remembered(ME, Role::Pirate);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(Arc::ptr_eq(&session, &h.soulseek.session(ME).unwrap()));
     h.soulseek.shutdown().await;

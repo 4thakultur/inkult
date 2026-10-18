@@ -31,7 +31,7 @@ use super::store::Account;
 use super::uploads::Uploads;
 use super::wire::{WireError, read_coded_frame};
 use super::{Context, PortLease, SoulseekError, now_ms};
-use crate::auth::UserId;
+use crate::auth::{Role, UserId};
 use crate::jobs::lock;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -57,6 +57,8 @@ pub enum ConnState {
     Kicked,
     /// The server stopped accepting the credentials.
     Rejected,
+    /// The captains turned Soulseek off for this user (see `rules`).
+    Disabled,
 }
 
 /// What the UI shows about the user's Soulseek account.
@@ -68,7 +70,10 @@ pub struct AccountStatus {
     /// Port peers can connect to, if one could be opened.
     pub listen_port: Option<u16>,
     pub remembered: bool,
+    /// The user's choice to share; only in effect while `sharing_allowed`.
     pub share_library: bool,
+    /// Whether the captains allow sharing at all.
+    pub sharing_allowed: bool,
     pub shared_folders: usize,
     pub shared_files: usize,
     pub unread_messages: usize,
@@ -80,7 +85,7 @@ pub struct AccountStatus {
 }
 
 impl AccountStatus {
-    pub fn signed_out(account: Option<Account>) -> Self {
+    pub fn signed_out(account: Option<Account>, sharing_allowed: bool) -> Self {
         let account = account.unwrap_or_default();
         Self {
             state: ConnState::SignedOut,
@@ -89,6 +94,7 @@ impl AccountStatus {
             listen_port: None,
             remembered: false,
             share_library: account.share_library,
+            sharing_allowed,
             shared_folders: 0,
             shared_files: 0,
             unread_messages: 0,
@@ -194,6 +200,7 @@ impl Session {
     pub(super) async fn start(
         ctx: Arc<Context>,
         owner: UserId,
+        role: Role,
         username: String,
         password: String,
         listener: Option<(TcpListener, PortLease)>,
@@ -235,7 +242,7 @@ impl Session {
             browses: Browses::default(),
             chats: Mutex::new(Chats::default()),
             downloads: Downloads::new(&account.downloads),
-            uploads: Uploads::new(account.share_library),
+            uploads: Uploads::new(account.share_library, ctx.config.rules.clone(), owner, role),
             ctx,
         });
         lock(&session.searches).set_wishlist(&account.wishlist);
@@ -330,7 +337,8 @@ impl Session {
             message,
             listen_port: self.listen_port.filter(|_| !self.is_stopped()),
             remembered: account.password.is_some(),
-            share_library: self.uploads.sharing(),
+            share_library: self.uploads.wanted(),
+            sharing_allowed: self.uploads.allowed(),
             shared_folders,
             shared_files,
             unread_messages: lock(&self.chats).unread(),

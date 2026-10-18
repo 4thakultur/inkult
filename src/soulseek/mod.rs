@@ -17,6 +17,10 @@
 //!      └─ uploads             opt-in sharing of the user's own library
 //! ```
 //!
+//! Above each user's own choices, the captains' rules (`rules`) decide who
+//! may use Soulseek and whether anyone may share: everything leaves from
+//! the host's address, so that is the host's call.
+//!
 //! Each Inkult user signs in with their own Soulseek account: Soulseek
 //! identities are personal (private messages, other users' ban lists and
 //! queues follow the account), and one account cannot be signed in twice.
@@ -30,6 +34,7 @@ mod downloads;
 mod import;
 mod messages;
 mod peer;
+mod rules;
 mod search;
 mod session;
 mod social;
@@ -41,19 +46,20 @@ mod wire;
 #[cfg(test)]
 mod e2e_tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::net::TcpListener;
 
-use crate::auth::UserId;
+use crate::auth::{Role, UserId};
 use crate::domain::length::TrackLengthLimit;
 use crate::library::Library;
 use crate::tools::ffmpeg::Ffmpeg;
 
 pub use downloads::FileRequest;
-pub use session::{AccountStatus, Session};
+pub use rules::{MemberRules, Override, SoulseekAccess, SoulseekRules};
+pub use session::{AccountStatus, ConnState, Session};
 pub use store::StoreError;
 pub use upgrade::{UpgradeError, UpgradeProgress, UpgradeWanted};
 
@@ -89,6 +95,10 @@ pub enum SoulseekError {
     NotFound,
     #[error("{0}")]
     Limit(String),
+    #[error("Soulseek is turned off on this server")]
+    Disabled,
+    #[error("sharing on Soulseek is turned off on this server")]
+    SharingDisabled,
 }
 
 /// Validate a Soulseek username as typed by a user.
@@ -115,6 +125,8 @@ pub struct SoulseekConfig {
     /// Listening ports handed out to sessions, one each.
     pub ports: Vec<u16>,
     pub upload_slots: usize,
+    /// Who may use Soulseek and whether anyone may share (live).
+    pub rules: SoulseekRules,
     /// Search results over it are dropped and received files over it are
     /// not imported.
     pub max_track_length: TrackLengthLimit,
@@ -160,6 +172,10 @@ pub struct Soulseek {
     /// Serializes sign-ins so one account cannot be signed in twice by a
     /// race between two users.
     login_lock: tokio::sync::Mutex<()>,
+    /// Users whose session was ended because the rules turned Soulseek off
+    /// for them, and who had chosen to stay signed in: they are reconnected
+    /// once it is back on (see [`Self::resume_suspended`]).
+    suspended: Mutex<HashSet<UserId>>,
 }
 
 impl Soulseek {
@@ -181,6 +197,7 @@ impl Soulseek {
             }),
             sessions: Mutex::new(HashMap::new()),
             login_lock: tokio::sync::Mutex::new(()),
+            suspended: Mutex::new(HashSet::new()),
         })
     }
 
@@ -192,7 +209,8 @@ impl Soulseek {
     /// the stored Soulseek password must not be put to use on behalf of
     /// someone who has not proven to be its owner. That is also why nothing
     /// reconnects at startup.
-    pub fn resume_remembered(self: &Arc<Self>, user: UserId) {
+    pub fn resume_remembered(self: &Arc<Self>, user: UserId, role: Role) {
+        crate::jobs::lock(&self.suspended).remove(&user);
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let Some(account) = this.ctx.store.get(user).await else {
@@ -208,7 +226,7 @@ impl Soulseek {
                 return;
             }
             if let Err(e) = this
-                .sign_in_locked(user, &account.username, &password, true)
+                .sign_in_locked(user, role, &account.username, &password, true)
                 .await
             {
                 tracing::warn!(%user, soulseek_user = %account.username, error = %e, "automatic Soulseek sign-in failed");
@@ -228,10 +246,81 @@ impl Soulseek {
             .ok_or(SoulseekError::NotSignedIn)
     }
 
-    pub async fn status(&self, user: UserId) -> AccountStatus {
+    pub async fn status(&self, user: UserId, role: Role) -> AccountStatus {
         match self.session(user) {
             Some(session) => session.status().await,
-            None => AccountStatus::signed_out(self.ctx.store.get(user).await),
+            None => AccountStatus::signed_out(
+                self.ctx.store.get(user).await,
+                self.ctx.config.rules.may_share(user, role),
+            ),
+        }
+    }
+
+    /// What a user whom the rules keep off Soulseek is shown: their saved
+    /// account, but no live state.
+    pub async fn disabled_status(&self, user: UserId, role: Role) -> AccountStatus {
+        let mut status = AccountStatus::signed_out(
+            self.ctx.store.get(user).await,
+            self.ctx.config.rules.may_share(user, role),
+        );
+        status.state = ConnState::Disabled;
+        status.message = Some(SoulseekError::Disabled.to_string());
+        status
+    }
+
+    /// The rules now keep `user` off Soulseek: end their session. Unlike
+    /// signing out, the stored password (if any) is kept, so the account
+    /// reconnects when Soulseek is turned back on for them. Unfinished
+    /// downloads are saved and resume then, as after a restart.
+    pub async fn suspend(&self, user: UserId) {
+        let session = crate::jobs::lock(&self.sessions).remove(&user);
+        let Some(session) = session else {
+            return;
+        };
+        let was_running = !session.is_stopped();
+        session.stop().await;
+        let remembered = self
+            .ctx
+            .store
+            .get(user)
+            .await
+            .is_some_and(|a| a.password.is_some());
+        if was_running && remembered {
+            crate::jobs::lock(&self.suspended).insert(user);
+        }
+        tracing::info!(%user, soulseek_user = %session.username(), "Soulseek session ended by the server rules");
+    }
+
+    /// Reconnect `user` if their session was ended by [`Self::suspend`].
+    /// Call only once the rules allow them Soulseek again, from a request
+    /// of theirs with full access (as for [`Self::resume_remembered`]).
+    pub fn resume_suspended(self: &Arc<Self>, user: UserId, role: Role) {
+        let was_suspended = crate::jobs::lock(&self.suspended).remove(&user);
+        if was_suspended {
+            self.resume_remembered(user, role);
+        }
+    }
+
+    /// A captain changed `user`'s rank or overrides: end their session if
+    /// the rules no longer let them use Soulseek, else apply the sharing
+    /// rule to it.
+    pub async fn member_changed(&self, user: UserId, role: Role) {
+        if !self.ctx.config.rules.may_use(user, role) {
+            self.suspend(user).await;
+        } else if let Some(session) = self.session(user).filter(|s| !s.is_stopped()) {
+            session.set_role(role).await;
+        }
+    }
+
+    /// The sharing rule changed: every session stops or resumes sharing.
+    pub async fn apply_sharing_rule(&self) {
+        let sessions: Vec<_> = crate::jobs::lock(&self.sessions)
+            .values()
+            .filter(|s| !s.is_stopped())
+            .cloned()
+            .collect();
+        for session in sessions {
+            session.apply_sharing().await;
         }
     }
 
@@ -270,6 +359,7 @@ impl Soulseek {
     pub async fn sign_in(
         &self,
         user: UserId,
+        role: Role,
         username: &str,
         password: &str,
         remember: bool,
@@ -281,7 +371,7 @@ impl Soulseek {
             ));
         }
         let _serialized = self.login_lock.lock().await;
-        self.sign_in_locked(user, &username, password, remember)
+        self.sign_in_locked(user, role, &username, password, remember)
             .await
     }
 
@@ -289,6 +379,7 @@ impl Soulseek {
     async fn sign_in_locked(
         &self,
         user: UserId,
+        role: Role,
         username: &str,
         password: &str,
         remember: bool,
@@ -320,6 +411,7 @@ impl Soulseek {
         let session = Session::start(
             Arc::clone(&self.ctx),
             user,
+            role,
             username.clone(),
             password.to_owned(),
             listener,
@@ -356,6 +448,7 @@ impl Soulseek {
         if let Some(session) = session {
             session.stop().await;
         }
+        crate::jobs::lock(&self.suspended).remove(&user);
         self.ctx.store.remove(user).await;
     }
 

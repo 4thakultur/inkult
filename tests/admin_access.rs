@@ -179,6 +179,11 @@ impl Server {
 
     /// Turn on 2FA from an enrollment session; returns the full session.
     async fn enroll(&self, session: &str, password: &str) -> String {
+        self.enroll_keeping_secret(session, password).await.0
+    }
+
+    /// [`Self::enroll`], also returning the authenticator secret.
+    async fn enroll_keeping_secret(&self, session: &str, password: &str) -> (String, String) {
         let setup = self
             .call(
                 Method::POST,
@@ -198,11 +203,17 @@ impl Server {
             )
             .await;
         assert_eq!(enabled.status, StatusCode::OK, "{}", enabled.text);
-        enabled.session.expect("session after enabling 2FA")
+        (enabled.session.expect("session after enabling 2FA"), secret)
     }
 
     /// Appoint the first captain and enroll 2FA (mandatory by default).
     async fn first_captain(&self) -> (u64, String) {
+        let (id, session, _) = self.first_captain_keeping_secret().await;
+        (id, session)
+    }
+
+    /// [`Self::first_captain`], also returning the authenticator secret.
+    async fn first_captain_keeping_secret(&self) -> (u64, String, String) {
         let setup = self
             .call(
                 Method::POST,
@@ -218,7 +229,8 @@ impl Server {
         assert_eq!(setup.status, StatusCode::OK, "{}", setup.text);
         let id = setup.body["id"].as_u64().expect("id");
         let session = setup.session.expect("captain session");
-        (id, self.enroll(&session, CAPTAIN_PASSWORD).await)
+        let (session, secret) = self.enroll_keeping_secret(&session, CAPTAIN_PASSWORD).await;
+        (id, session, secret)
     }
 
     async fn create_user(&self, captain: &str, username: &str, role: &str) -> (u64, String) {
@@ -269,6 +281,18 @@ impl Server {
         changed.session.expect("session")
     }
 
+    /// A further captain, fully onboarded; returns (session, password,
+    /// authenticator secret). Each code is accepted once, so tests that
+    /// confirm several changes within 30 s need several captains.
+    async fn extra_captain(&self, captain: &str, username: &str) -> (String, String, String) {
+        let (_, temporary) = self.create_user(captain, username, "captain").await;
+        let password = format!("{username} gallant otter juggles nine lanterns");
+        let session = self.login_temporary(username, &temporary).await;
+        let session = self.choose_password(&session, &temporary, &password).await;
+        let (session, secret) = self.enroll_keeping_secret(&session, &password).await;
+        (session, password, secret)
+    }
+
     /// Full onboarding of a captain-created account; returns
     /// (full session, password).
     async fn onboard(&self, username: &str, temporary: &str) -> (String, String) {
@@ -282,12 +306,23 @@ impl Server {
 /// RFC 6238 code for now (SHA-1, 6 digits, 30 s), as an authenticator app
 /// would show it.
 fn totp(secret: &str) -> String {
+    totp_at_step(secret, 0)
+}
+
+/// The code of the next 30 s step. Still accepted (one step of clock
+/// drift is allowed), and not refused as a replay of the code just used.
+fn next_totp(secret: &str) -> String {
+    totp_at_step(secret, 1)
+}
+
+fn totp_at_step(secret: &str, ahead: u64) -> String {
     let key = base32_decode(secret);
     let step = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_secs()
-        / 30;
+        / 30
+        + ahead;
     let mut mac = Hmac::<Sha1>::new_from_slice(&key).expect("hmac key");
     mac.update(&step.to_be_bytes());
     let digest = mac.finalize().into_bytes();
@@ -371,6 +406,11 @@ fn admin_operations(t: &Targets) -> Vec<(Method, String, Option<Value>)> {
             user(t.other_pirate),
             Some(json!({ "reset_password": true })),
         ),
+        (
+            Method::PATCH,
+            user(t.pirate),
+            Some(json!({ "soulseek": "allowed", "soulseek_sharing": "allowed" })),
+        ),
         (Method::DELETE, user(t.captain), None),
         (Method::DELETE, user(t.other_pirate), None),
         (Method::GET, "/api/admin/settings".into(), None),
@@ -388,6 +428,16 @@ fn admin_operations(t: &Targets) -> Vec<(Method, String, Option<Value>)> {
             Method::PATCH,
             "/api/admin/settings".into(),
             Some(json!({ "totp_issuer": "pwned" })),
+        ),
+        (
+            Method::PATCH,
+            "/api/admin/settings".into(),
+            Some(json!({ "soulseek": "off" })),
+        ),
+        (
+            Method::PATCH,
+            "/api/admin/settings".into(),
+            Some(json!({ "soulseek_sharing": "all" })),
         ),
         (Method::GET, "/api/library?scope=all".into(), None),
         (Method::GET, "/api/downloads?scope=all".into(), None),
@@ -917,4 +967,237 @@ async fn pirates_never_see_server_paths() {
     });
 
     f.assert_none();
+}
+
+#[tokio::test]
+async fn soulseek_rules_reach_the_crew() {
+    let server = Server::start().await;
+    let (_, captain, secret) = server.first_captain_keeping_secret().await;
+    let (jack_id, temporary) = server.create_user(&captain, "jack", "pirate").await;
+    let (jack, _) = server.onboard("jack", &temporary).await;
+    let (_, temporary) = server.create_user(&captain, "mary", "pirate").await;
+    let (mary, _) = server.onboard("mary", &temporary).await;
+    // More captains, for confirmations in the same 30 s as the first's.
+    let (bonny, bonny_password, bonny_secret) = server.extra_captain(&captain, "bonny").await;
+    let (read, read_password, read_secret) = server.extra_captain(&captain, "read").await;
+    let settings = |captain: String| {
+        let server = &server;
+        async move {
+            server
+                .call(Method::GET, "/api/admin/settings", Some(&captain), None)
+                .await
+                .body
+        }
+    };
+    let patch = |body: Value| {
+        let server = &server;
+        let captain = captain.clone();
+        async move {
+            server
+                .call(
+                    Method::PATCH,
+                    "/api/admin/settings",
+                    Some(&captain),
+                    Some(body),
+                )
+                .await
+        }
+    };
+    let slsk_state = |session: String| {
+        let server = &server;
+        async move {
+            let reply = server
+                .call(Method::GET, "/api/soulseek", Some(&session), None)
+                .await;
+            assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+            reply.body
+        }
+    };
+
+    // Defaults: Soulseek for everyone, sharing off until a captain allows it.
+    let now = settings(captain.clone()).await;
+    assert_eq!(now["soulseek"], "all");
+    assert_eq!(now["soulseek_sharing"], "off");
+    assert_eq!(slsk_state(jack.clone()).await["sharing_allowed"], false);
+
+    // Allowing more sharing is proven with the password and a code.
+    let refused = patch(json!({ "soulseek_sharing": "captains" })).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    let refused =
+        patch(json!({ "soulseek_sharing": "captains", "password": "wrong guess entirely" })).await;
+    assert!(refused.status.is_client_error(), "{}", refused.text);
+    assert_eq!(settings(captain.clone()).await["soulseek_sharing"], "off");
+    let captains_share = patch(json!({
+        "soulseek_sharing": "captains",
+        "password": CAPTAIN_PASSWORD,
+        "code": next_totp(&secret),
+    }))
+    .await;
+    assert_eq!(
+        captains_share.status,
+        StatusCode::OK,
+        "{}",
+        captains_share.text
+    );
+    assert_eq!(captains_share.body["soulseek_sharing"], "captains");
+    assert_eq!(slsk_state(captain.clone()).await["sharing_allowed"], true);
+    assert_eq!(slsk_state(jack.clone()).await["sharing_allowed"], false);
+    // Widening it again to everyone asks again.
+    let refused = patch(json!({ "soulseek_sharing": "all" })).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    // Narrowing needs nothing more.
+    let off = patch(json!({ "soulseek_sharing": "off" })).await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text);
+    assert_eq!(slsk_state(captain.clone()).await["sharing_allowed"], false);
+    let garbage = patch(json!({ "soulseek_sharing": "pirates" })).await;
+    assert!(garbage.status.is_client_error(), "{}", garbage.text);
+
+    // Captains only: pirates are kept out of every Soulseek route.
+    let captains = patch(json!({ "soulseek": "captains" })).await;
+    assert_eq!(captains.status, StatusCode::OK, "{}", captains.text);
+    assert_eq!(slsk_state(jack.clone()).await["state"], "disabled");
+    assert_eq!(slsk_state(captain.clone()).await["state"], "signed_out");
+    for (method, path, body) in [
+        (
+            Method::POST,
+            "/api/soulseek/login",
+            Some(json!({ "username": "jackslsk", "password": "x" })),
+        ),
+        (Method::GET, "/api/soulseek/searches", None),
+        (
+            Method::POST,
+            "/api/soulseek/settings",
+            Some(json!({ "share_library": true })),
+        ),
+        (Method::GET, "/api/soulseek/uploads", None),
+    ] {
+        let reply = server.call(method.clone(), path, Some(&jack), body).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::FORBIDDEN,
+            "pirate {method} {path}: {}",
+            reply.text
+        );
+    }
+
+    // Off: captains too.
+    let off = patch(json!({ "soulseek": "off" })).await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text);
+    assert_eq!(slsk_state(captain.clone()).await["state"], "disabled");
+    let login = server
+        .call(
+            Method::POST,
+            "/api/soulseek/login",
+            Some(&captain),
+            Some(json!({ "username": "anneslsk", "password": "x" })),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::FORBIDDEN, "{}", login.text);
+
+    // Back on for everyone.
+    let on = patch(json!({ "soulseek": "all" })).await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert_eq!(slsk_state(jack.clone()).await["state"], "signed_out");
+
+    // Per member: captains only, but jack is let in; mary is not.
+    let member = |body: Value, by: String| {
+        let server = &server;
+        async move {
+            server
+                .call(
+                    Method::PATCH,
+                    &format!("/api/users/{jack_id}"),
+                    Some(&by),
+                    Some(body),
+                )
+                .await
+        }
+    };
+    patch(json!({ "soulseek": "captains", "soulseek_sharing": "off" })).await;
+    let let_in = member(json!({ "soulseek": "allowed" }), captain.clone()).await;
+    assert!(let_in.status.is_success(), "{}", let_in.text);
+    assert_eq!(slsk_state(jack.clone()).await["state"], "signed_out");
+    assert_eq!(slsk_state(mary.clone()).await["state"], "disabled");
+    // A pirate cannot choose for themselves.
+    let own = member(json!({ "soulseek": "allowed" }), jack.clone()).await;
+    assert_eq!(own.status, StatusCode::FORBIDDEN, "{}", own.text);
+
+    // Letting one member share asks for the password and a code.
+    let refused = member(json!({ "soulseek_sharing": "allowed" }), bonny.clone()).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    let crew_row = |name: &'static str| {
+        let server = &server;
+        let captain = captain.clone();
+        async move {
+            let crew = server
+                .call(Method::GET, "/api/users", Some(&captain), None)
+                .await
+                .body;
+            crew.as_array()
+                .expect("crew")
+                .iter()
+                .find(|m| m["username"] == name)
+                .expect("member")
+                .clone()
+        }
+    };
+    assert_eq!(crew_row("jack").await["soulseek_sharing_allowed"], false);
+    let allowed = member(
+        json!({
+            "soulseek_sharing": "allowed",
+            "password": bonny_password,
+            "code": next_totp(&bonny_secret),
+        }),
+        bonny.clone(),
+    )
+    .await;
+    assert!(allowed.status.is_success(), "{}", allowed.text);
+    let jack_row = crew_row("jack").await;
+    assert_eq!(jack_row["soulseek"]["soulseek"], "allowed");
+    assert_eq!(jack_row["soulseek_allowed"], true);
+    // The sharing switch is off, and OFF wins over a member's choice.
+    assert_eq!(jack_row["soulseek_sharing_allowed"], false);
+    let widened = server
+        .call(
+            Method::PATCH,
+            "/api/admin/settings",
+            Some(&read),
+            Some(json!({
+                "soulseek_sharing": "captains",
+                "password": read_password,
+                "code": next_totp(&read_secret),
+            })),
+        )
+        .await;
+    assert_eq!(widened.status, StatusCode::OK, "{}", widened.text);
+    assert_eq!(crew_row("jack").await["soulseek_sharing_allowed"], true);
+    assert_eq!(slsk_state(jack.clone()).await["sharing_allowed"], true);
+    assert_eq!(crew_row("mary").await["soulseek_sharing_allowed"], false);
+
+    // OFF wins over a member let in.
+    patch(json!({ "soulseek": "off" })).await;
+    assert_eq!(slsk_state(jack.clone()).await["state"], "disabled");
+    assert_eq!(crew_row("jack").await["soulseek_allowed"], false);
+
+    // Blocking narrows: no confirmation needed. Back to AUTO for both.
+    patch(json!({ "soulseek": "all" })).await;
+    let blocked = member(json!({ "soulseek": "blocked" }), captain.clone()).await;
+    assert!(blocked.status.is_success(), "{}", blocked.text);
+    assert_eq!(slsk_state(jack.clone()).await["state"], "disabled");
+    let auto = member(json!({ "soulseek": "auto" }), captain.clone()).await;
+    assert!(auto.status.is_success(), "{}", auto.text);
+    assert_eq!(slsk_state(jack).await["state"], "signed_out");
+
+    // A deleted member's choices are forgotten.
+    let deleted = server
+        .call(
+            Method::DELETE,
+            &format!("/api/users/{jack_id}"),
+            Some(&captain),
+            None,
+        )
+        .await;
+    assert!(deleted.status.is_success(), "{}", deleted.text);
+    let now = settings(captain.clone()).await;
+    assert!(now.get("soulseek_members").is_none(), "{now}");
 }

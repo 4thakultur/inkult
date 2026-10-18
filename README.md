@@ -363,7 +363,8 @@ Every received FLAC, WAV or AIFF gets a [spectrum check](#spectrum-check). A
 file found to be made from lossy audio is kept (you chose it) but is not
 called lossless, and says why.
 
-**Sharing** (off by default, **SETUP**). When on, the tracks in *your* Inkult
+**Sharing** (off by default, **SETUP**; only offered while a captain allows
+sharing, see [Server rules](#server-rules)). When on, the tracks in *your* Inkult
 library are shared read-only under a virtual `inkult\Artist\Album\…` folder:
 other users can browse them, search them by user search, and download them
 through `INKULT_SOULSEEK_UPLOAD_SLOTS` upload slots (one per user at a time,
@@ -477,9 +478,22 @@ once and are saved in `data/settings.json`.
 | Two-factor login      | Required for everyone | `REQUIRED FOR EVERYONE`, `CAPTAINS ONLY` or `OPTIONAL`. Whoever it applies to cannot turn 2FA off, and must set it up right after logging in. |
 | Authenticator name    | `Inkult`              | The name authenticator apps show next to the code, e.g. `Inkult (home)`. Only apps set up afterwards show a new name. |
 | Longest track         | 10:00                 | Longer uploads are treated as mixes/sets; `0` = no limit. Files already in the library are not touched. |
+| Soulseek              | Everyone              | `EVERYONE`, `CAPTAINS ONLY` or `OFF`. Whoever it no longer applies to is signed out of Soulseek at once (searches, transfers and quality upgrades stop); accounts, wishlists and unfinished downloads are kept, and accounts set to *stay signed in* reconnect when it is back on. |
+| Soulseek sharing      | Off                   | `EVERYONE`, `CAPTAINS ONLY` or `OFF`: who may share their library (each still turns it on for themselves). Whoever it does not apply to shares nothing: the server is told 0 files, peers browse an empty share and queued or running uploads are cancelled. Each user's own choice is kept and applies again once they are allowed (also when promoted to captain). |
 
-Relaxing the two-factor rule asks for the captain's password and a code, so
-a hijacked captain session cannot quietly switch it off. An unreadable
+In **CREW MANIFEST**, each member also has a **SOULSEEK** and a **SHARING**
+choice over these two switches: `AUTO` follows the switch for their rank,
+`ALLOWED` lets them in whatever their rank (e.g. one trusted pirate under
+`CAPTAINS ONLY`), `BLOCKED` keeps them out. A switch set to `OFF` wins over
+every member's choice, so it stays the way to stop Soulseek or sharing for
+everyone at once. The row shows what the switch and the choice add up to.
+Choices are kept in `settings.json` and forgotten when the account is deleted.
+
+Relaxing the two-factor rule or allowing more Soulseek sharing (by switch or
+for a single member) asks for the captain's password and a code, so a
+hijacked captain session cannot quietly switch 2FA off, or start uploading
+from the server's connection: every Soulseek transfer leaves from the
+machine Inkult runs on, so what is shared is the host's call. An unreadable
 `settings.json` stops startup instead of being reset to defaults.
 
 ## Installation

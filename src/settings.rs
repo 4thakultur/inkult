@@ -2,14 +2,15 @@
 //! (`settings.json` in the data directory).
 //!
 //! These are policy decisions, not deployment details: who must use
-//! two-factor login, the name authenticator apps show, and the longest
-//! track accepted. Deployment settings (paths, ports, limits on the
+//! two-factor login, the name authenticator apps show, the longest
+//! track accepted, and who may use Soulseek and share on it. Deployment settings (paths, ports, limits on the
 //! machine's resources) stay environment variables.
 //!
 //! Like the users file, an unreadable settings file stops startup instead
 //! of being replaced: silently falling back to defaults could turn
 //! mandatory 2FA off without anyone choosing to.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -17,8 +18,11 @@ use serde::{Deserialize, Serialize};
 
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::auth::{AuthConfig, DEFAULT_TOTP_ISSUER, MAX_TOTP_ISSUER_CHARS, TwoFactorPolicy};
+use crate::auth::{
+    AuthConfig, DEFAULT_TOTP_ISSUER, MAX_TOTP_ISSUER_CHARS, TwoFactorPolicy, UserId,
+};
 use crate::domain::length::{MaxTrackLength, TrackLengthLimit};
+use crate::soulseek::{MemberRules, SoulseekAccess, SoulseekRules};
 use crate::storage::{Visibility, write_atomic};
 
 const SETTINGS_VERSION: u32 = 1;
@@ -37,6 +41,72 @@ pub struct ServerSettings {
     /// Longest track accepted, in seconds; `0` = no limit.
     #[serde(default = "default_max_track_secs")]
     pub max_track_secs: u32,
+    /// Who may use Soulseek.
+    #[serde(default = "default_soulseek")]
+    pub soulseek: SoulseekAccess,
+    /// Who may share their library on Soulseek. Nobody unless a captain
+    /// allows it: shared files are uploaded from the host's address, so
+    /// the host decides (users then still opt in one by one). Older files
+    /// stored a yes/no here.
+    #[serde(
+        default = "default_soulseek_sharing",
+        deserialize_with = "SoulseekAccess::deserialize_or_bool"
+    )]
+    pub soulseek_sharing: SoulseekAccess,
+    /// Captains' choices for single members over the two switches above
+    /// (only members with a choice other than "follow the switch").
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "member_list"
+    )]
+    pub soulseek_members: BTreeMap<UserId, MemberRules>,
+}
+
+/// The member choices are stored as a list: map keys that are numbers do
+/// not survive the flattening of the settings file (`SettingsFile`).
+mod member_list {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::auth::UserId;
+    use crate::soulseek::MemberRules;
+
+    #[derive(Serialize, Deserialize)]
+    struct Entry {
+        user: UserId,
+        #[serde(flatten)]
+        rules: MemberRules,
+    }
+
+    pub fn serialize<S: Serializer>(
+        members: &BTreeMap<UserId, MemberRules>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        members
+            .iter()
+            .map(|(&user, &rules)| Entry { user, rules })
+            .collect::<Vec<_>>()
+            .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<UserId, MemberRules>, D::Error> {
+        Ok(Vec::<Entry>::deserialize(d)?
+            .into_iter()
+            .map(|e| (e.user, e.rules))
+            .collect())
+    }
+}
+
+fn default_soulseek_sharing() -> SoulseekAccess {
+    SoulseekAccess::Off
+}
+
+fn default_soulseek() -> SoulseekAccess {
+    SoulseekAccess::Everyone
 }
 
 fn default_two_factor() -> TwoFactorPolicy {
@@ -57,6 +127,9 @@ impl Default for ServerSettings {
             two_factor: default_two_factor(),
             totp_issuer: default_issuer(),
             max_track_secs: default_max_track_secs(),
+            soulseek: default_soulseek(),
+            soulseek_sharing: default_soulseek_sharing(),
+            soulseek_members: BTreeMap::new(),
         }
     }
 }
@@ -64,6 +137,41 @@ impl Default for ServerSettings {
 impl ServerSettings {
     pub fn max_track_length(&self) -> MaxTrackLength {
         MaxTrackLength::from_secs(self.max_track_secs)
+    }
+
+    /// Whether switching to `next` can let someone share who could not
+    /// before: the switch, or a member's own sharing choice, widened.
+    pub fn widens_sharing(&self, next: &Self) -> bool {
+        let member = |settings: &Self, user| {
+            settings
+                .soulseek_members
+                .get(user)
+                .copied()
+                .unwrap_or_default()
+        };
+        self.soulseek_sharing.is_widened_by(next.soulseek_sharing)
+            || (self.soulseek_members.keys())
+                .chain(next.soulseek_members.keys())
+                .any(|user| {
+                    member(self, user)
+                        .sharing
+                        .is_widened_by(member(next, user).sharing)
+                })
+    }
+
+    /// The live Soulseek rules these settings describe.
+    fn soulseek_rules(
+        &self,
+    ) -> (
+        SoulseekAccess,
+        SoulseekAccess,
+        BTreeMap<UserId, MemberRules>,
+    ) {
+        (
+            self.soulseek,
+            self.soulseek_sharing,
+            self.soulseek_members.clone(),
+        )
     }
 
     pub fn auth(&self) -> AuthConfig {
@@ -123,6 +231,7 @@ pub struct Settings {
     path: PathBuf,
     current: Mutex<ServerSettings>,
     track_limit: TrackLengthLimit,
+    soulseek: SoulseekRules,
 }
 
 impl Settings {
@@ -150,6 +259,10 @@ impl Settings {
             Self {
                 path,
                 track_limit: TrackLengthLimit::new(settings.max_track_length()),
+                soulseek: {
+                    let (access, sharing, members) = settings.soulseek_rules();
+                    SoulseekRules::new(access, sharing, members)
+                },
                 current: Mutex::new(settings),
             },
             created,
@@ -163,6 +276,11 @@ impl Settings {
     /// The live track-length limit, for the parts of Inkult that apply it.
     pub fn track_limit(&self) -> TrackLengthLimit {
         self.track_limit.clone()
+    }
+
+    /// The live Soulseek rules, for the Soulseek service.
+    pub fn soulseek_rules(&self) -> SoulseekRules {
+        self.soulseek.clone()
     }
 
     pub async fn lock(&self) -> MutexGuard<'_, ServerSettings> {
@@ -184,6 +302,8 @@ impl Settings {
                 source: io::Error::other(e),
             })??;
         self.track_limit.set(next.max_track_length());
+        let (access, sharing, members) = next.soulseek_rules();
+        self.soulseek.set(access, sharing, members);
         **current = next;
         Ok(())
     }
@@ -247,6 +367,15 @@ mod tests {
             two_factor: TwoFactorPolicy::Captains,
             totp_issuer: "Inkult (home)".into(),
             max_track_secs: 0,
+            soulseek: SoulseekAccess::Captains,
+            soulseek_sharing: SoulseekAccess::Captains,
+            soulseek_members: BTreeMap::from([(
+                UserId(7),
+                MemberRules {
+                    soulseek: crate::soulseek::Override::Allowed,
+                    sharing: crate::soulseek::Override::Blocked,
+                },
+            )]),
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path).unwrap(), Some(settings));
@@ -264,6 +393,23 @@ mod tests {
         let loaded = load(&path).unwrap().unwrap();
         assert_eq!(loaded.two_factor, TwoFactorPolicy::Everyone);
         assert_eq!(loaded.max_track_secs, 900);
+        // Soulseek stays usable after an upgrade, but sharing waits for a
+        // captain to allow it.
+        assert_eq!(loaded.soulseek, SoulseekAccess::Everyone);
+        assert_eq!(loaded.soulseek_sharing, SoulseekAccess::Off);
+        // Sharing used to be a yes/no.
+        for (stored, read) in [
+            ("true", SoulseekAccess::Everyone),
+            ("false", SoulseekAccess::Off),
+            ("\"captains\"", SoulseekAccess::Captains),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"version":1,"soulseek_sharing":{stored}}}"#),
+            )
+            .unwrap();
+            assert_eq!(load(&path).unwrap().unwrap().soulseek_sharing, read);
+        }
     }
 
     #[test]
@@ -296,13 +442,42 @@ mod tests {
             ..guard.clone()
         };
         let limit = settings.track_limit();
+        let rules = settings.soulseek_rules();
+        assert_eq!(rules.sharing(), SoulseekAccess::Off);
+        let next = ServerSettings {
+            soulseek: SoulseekAccess::Off,
+            soulseek_sharing: SoulseekAccess::Captains,
+            ..next
+        };
         settings.replace(&mut guard, next).await.unwrap();
         drop(guard);
         assert_eq!(limit.get(), MaxTrackLength::UNLIMITED);
+        assert_eq!(rules.access(), SoulseekAccess::Off);
+        assert_eq!(rules.sharing(), SoulseekAccess::Captains);
 
         let (reopened, created) = Settings::open(path, &initial).await.unwrap();
         assert!(!created);
         assert_eq!(reopened.get().await.max_track_secs, 0);
+    }
+
+    #[test]
+    fn a_member_allowed_to_share_widens_sharing() {
+        use crate::soulseek::Override;
+        let before = ServerSettings::default();
+        let with = |sharing| ServerSettings {
+            soulseek_members: BTreeMap::from([(
+                UserId(7),
+                MemberRules {
+                    soulseek: Override::Auto,
+                    sharing,
+                },
+            )]),
+            ..ServerSettings::default()
+        };
+        assert!(before.widens_sharing(&with(Override::Allowed)));
+        assert!(!before.widens_sharing(&with(Override::Blocked)));
+        assert!(with(Override::Blocked).widens_sharing(&before));
+        assert!(!with(Override::Allowed).widens_sharing(&before));
     }
 
     #[test]

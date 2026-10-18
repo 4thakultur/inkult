@@ -255,6 +255,14 @@
           <span class="slsk-conn" id="slsk-conn" aria-live="polite"></span>
         </div>
 
+        <div id="slsk-off" hidden>
+          <div class="empty">
+            <p class="empty-title">&gt;&gt; SOULSEEK IS OFF.</p>
+            <p>THE CAPTAIN HAS TURNED SOULSEEK OFF ON THIS SERVER FOR NOW. YOUR ACCOUNT, WISHLIST AND
+               UNFINISHED DOWNLOADS ARE KEPT FOR WHEN IT IS BACK ON.</p>
+          </div>
+        </div>
+
         <div id="slsk-signin" hidden>
           <div class="empty">
             <p class="empty-title">&gt;&gt; SIGN IN TO SOULSEEK.</p>
@@ -367,7 +375,7 @@
               <p class="setting-note" id="slsk-account"></p>
               <div class="setting-options"><button type="button" class="btn danger" id="slsk-signout">[ SIGN OUT ]</button></div>
             </div>
-            <div class="setting">
+            <div class="setting" id="slsk-share-setting">
               <p class="setting-label" id="slsk-share-label">SHARE MY LIBRARY:</p>
               <div class="chips setting-options" id="slsk-share" role="radiogroup" aria-labelledby="slsk-share-label">
                 <button type="button" class="chip" data-share="on" role="radio" aria-checked="false">ON</button>
@@ -553,6 +561,24 @@
                artist pages and Soulseek results, and refused when downloaded. Minutes:seconds, or 0 for no limit.
                Files already in the library are not touched.</p>
           </form>
+          <div class="setting">
+            <p class="setting-label" id="rule-slsk-label">SOULSEEK:</p>
+            <div class="chips setting-options" id="rule-slsk" role="radiogroup" aria-labelledby="rule-slsk-label">
+              <button type="button" class="chip" data-access="all" role="radio" aria-checked="false">EVERYONE</button>
+              <button type="button" class="chip" data-access="captains" role="radio" aria-checked="false">CAPTAINS ONLY</button>
+              <button type="button" class="chip" data-access="off" role="radio" aria-checked="false">OFF</button>
+            </div>
+            <p class="setting-note dim" id="rule-slsk-detail"></p>
+          </div>
+          <div class="setting">
+            <p class="setting-label" id="rule-share-label">SOULSEEK SHARING:</p>
+            <div class="chips setting-options" id="rule-share" role="radiogroup" aria-labelledby="rule-share-label">
+              <button type="button" class="chip" data-sharing="all" role="radio" aria-checked="false">EVERYONE</button>
+              <button type="button" class="chip" data-sharing="captains" role="radio" aria-checked="false">CAPTAINS ONLY</button>
+              <button type="button" class="chip" data-sharing="off" role="radio" aria-checked="false">OFF</button>
+            </div>
+            <p class="setting-note dim" id="rule-share-detail"></p>
+          </div>
         </div>
         <h3 class="admin-heading">CREW MANIFEST</h3>
         <form id="crew-form" class="form-grid crew-form" autocomplete="off" novalidate>

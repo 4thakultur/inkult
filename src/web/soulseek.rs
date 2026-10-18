@@ -57,6 +57,7 @@ pub fn status_code(e: &SoulseekError) -> StatusCode {
         SoulseekError::NotSignedIn | SoulseekError::AccountInUse => StatusCode::CONFLICT,
         SoulseekError::Offline => StatusCode::SERVICE_UNAVAILABLE,
         SoulseekError::NotFound | SoulseekError::UserOffline { .. } => StatusCode::NOT_FOUND,
+        SoulseekError::Disabled | SoulseekError::SharingDisabled => StatusCode::FORBIDDEN,
         SoulseekError::PeerTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
         SoulseekError::Limit(_) => StatusCode::TOO_MANY_REQUESTS,
         SoulseekError::ServerUnreachable(_) | SoulseekError::Peer(_) => StatusCode::BAD_GATEWAY,
@@ -107,7 +108,7 @@ async fn settings(
     Extension(user): Extension<User>,
     Json(body): Json<SettingsBody>,
 ) -> Result<impl IntoResponse, AppError> {
-    app.soulseek(&user)?.set_sharing(body.share_library).await;
+    app.soulseek(&user)?.set_sharing(body.share_library).await?;
     Ok(Json(app.soulseek_status(&user).await))
 }
 

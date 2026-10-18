@@ -874,16 +874,18 @@ function downloadButton(track) {
 }
 
 /** Soulseek session states in which nothing can be searched. */
-const SLSK_ENDED = new Set(["signed_out", "kicked", "rejected"]);
+const SLSK_ENDED = new Set(["signed_out", "kicked", "rejected", "disabled"]);
 
 /** The download menu's quality upgrade, with why it can't run if it can't. */
 function searchUpgradeChoice() {
   // Unknown until the Soulseek tab has loaded once; the server then explains.
   const signedOut = Boolean(slsk.status) && SLSK_ENDED.has(slsk.status.state);
+  const off = Boolean(slsk.status) && slsk.status.state === "disabled";
   return {
     id: UPGRADE_CHOICE,
     label: "Quality upgrade",
-    detail: signedOut
+    detail: off ? "Not possible: Soulseek is turned off on this server"
+      : signedOut
       ? "Not possible: sign in to Soulseek in [2] SOULSEEK first"
       : "Skip the stream: find a lossless copy (FLAC, WAV, AIFF) on Soulseek, checked for fakes",
     disabled: signedOut,
@@ -3064,7 +3066,9 @@ function renderSlskStatus() {
   transfers.textContent = String(active);
   if (state.view !== "soulseek") return;
 
-  $("#slsk-signin").hidden = signedIn;
+  const off = s.state === "disabled";
+  $("#slsk-off").hidden = !off;
+  $("#slsk-signin").hidden = signedIn || off;
   $("#slsk-main").hidden = !signedIn;
   const conn = $("#slsk-conn");
   conn.className = `slsk-conn ${s.state}`;
@@ -3075,10 +3079,11 @@ function renderSlskStatus() {
     kicked: "SIGNED OUT",
     rejected: "SIGNED OUT",
     signed_out: "OFFLINE",
+    disabled: "OFF",
   }[s.state] || s.state;
   conn.classList.add("keep-case");
 
-  if (!signedIn) {
+  if (!signedIn && !off) {
     const user = $("#slsk-user");
     if (!user.value && s.username) user.value = s.username;
     const error = $("#slsk-signin-error");
@@ -3615,9 +3620,12 @@ function renderSlskTransfers() {
 
   const uploads = $("#slsk-uploads");
   if (!slsk.uploads.length) {
-    uploads.replaceChildren(h("p", { class: "dim setting-note" }, slsk.status && slsk.status.share_library
-      ? "Nobody is downloading from you right now."
-      : "Sharing is off, so nobody can download from you. Turn it on under SETUP."));
+    const s = slsk.status;
+    uploads.replaceChildren(h("p", { class: "dim setting-note" }, !s || !s.sharing_allowed
+      ? "Sharing is turned off for your account on this server, so nobody can download from you."
+      : s.share_library
+        ? "Nobody is downloading from you right now."
+        : "Sharing is off, so nobody can download from you. Turn it on under SETUP."));
     return;
   }
   uploads.replaceChildren(...slsk.uploads.map((u) => h("div", { class: "slsk-dl" },
@@ -3947,12 +3955,17 @@ function renderSlskSetup() {
   $("#slsk-account").textContent = `Signed in as ${s.username}. ${s.remembered
     ? "Inkult reconnects automatically after a restart (the password is stored on this server)."
     : "You will need to sign in again after Inkult restarts."}`;
+  // The captain decides whether anyone may share: the files would be
+  // uploaded from the server's connection.
+  $("#slsk-share").hidden = !s.sharing_allowed;
   for (const chip of document.querySelectorAll("#slsk-share .chip")) {
     const active = (chip.dataset.share === "on") === Boolean(s.share_library);
     chip.classList.toggle("active", active);
     chip.setAttribute("aria-checked", String(active));
   }
-  $("#slsk-share-detail").textContent = s.share_library
+  $("#slsk-share-detail").textContent = !s.sharing_allowed
+    ? "Not available: the captain has turned sharing off for your account on this server."
+    : s.share_library
     ? `Sharing ${s.shared_files} file(s) in ${s.shared_folders} folder(s) from your Inkult library, read-only. `
       + "Other users see them under an \"inkult\" folder; your server's paths stay private."
     : "Only tracks in your own Inkult library would be shared. Many users only serve people who share, "
@@ -5495,6 +5508,24 @@ const POLICY_NOTES = {
 const POLICY_NAMES = { all: "REQUIRED FOR EVERYONE", captains: "CAPTAINS ONLY", off: "OPTIONAL" };
 const POLICY_STRENGTH = { off: 0, captains: 1, all: 2 };
 
+const ACCESS_NOTES = {
+  all: "Every crew member can sign in to Soulseek with their own account.",
+  captains: "Only captains can use Soulseek. Pirates are signed out of it; their accounts, wishlists and " +
+    "unfinished downloads are kept for when it is back.",
+  off: "Nobody can use Soulseek. Everyone is signed out of it; accounts, wishlists and unfinished downloads " +
+    "are kept, and accounts set to stay signed in reconnect once it is back on.",
+};
+const ACCESS_NAMES = { all: "EVERYONE", captains: "CAPTAINS ONLY", off: "OFF" };
+const ACCESS_REACH = { off: 0, captains: 1, all: 2 };
+const SHARING_NOTES = {
+  all: "Every crew member may share their own library, if they turn it on themselves under [2] SOULSEEK → SETUP. " +
+    "Shared files are uploaded from this server's internet connection.",
+  captains: "Captains may share their own library, if they turn it on themselves under [2] SOULSEEK → SETUP; " +
+    "pirates cannot. Shared files are uploaded from this server's internet connection.",
+  off: "Nobody shares: peers see no files and cannot download anything from this server. " +
+    "Each member's own choice is kept for when sharing is allowed again.",
+};
+
 const twoFactorRequiredFor = (role) => Boolean(rules.current) &&
   (rules.current.two_factor === "all" || (rules.current.two_factor === "captains" && role === "captain"));
 
@@ -5522,6 +5553,19 @@ function renderRules(settings) {
     chip.setAttribute("aria-checked", String(on));
   }
   $("#rule-2fa-detail").textContent = POLICY_NOTES[settings.two_factor] || "";
+  for (const chip of document.querySelectorAll("#rule-slsk .chip")) {
+    const on = chip.dataset.access === settings.soulseek;
+    chip.classList.toggle("active", on);
+    chip.setAttribute("aria-checked", String(on));
+  }
+  $("#rule-slsk-detail").textContent = (ACCESS_NOTES[settings.soulseek] || "") + memberNote(settings.soulseek);
+  for (const chip of document.querySelectorAll("#rule-share .chip")) {
+    const on = chip.dataset.sharing === settings.soulseek_sharing;
+    chip.classList.toggle("active", on);
+    chip.setAttribute("aria-checked", String(on));
+  }
+  $("#rule-share-detail").textContent = (SHARING_NOTES[settings.soulseek_sharing] || "") +
+    memberNote(settings.soulseek_sharing);
   if (document.activeElement !== $("#rule-issuer")) $("#rule-issuer").value = settings.totp_issuer;
   if (document.activeElement !== $("#rule-length")) {
     $("#rule-length").value = settings.max_track_secs ? formatDuration(settings.max_track_secs) : "0";
@@ -5530,6 +5574,11 @@ function renderRules(settings) {
     "login they must choose their own password" +
     (settings.two_factor === "all" ? ", then set up two-factor login." : ".");
 }
+
+/** How the crew manifest's per-member choices relate to a switch. */
+const memberNote = (value) => value === "off"
+  ? " Choices for single members in the crew manifest wait until it is back on."
+  : " Members set to ALLOWED or BLOCKED in the crew manifest below are the exception.";
 
 /** Save a change to the server rules; resolves to whether it was saved. */
 async function saveRules(change, done) {
@@ -5588,6 +5637,53 @@ async function pickTwoFactorRule(policy) {
     if (saved && strandsMe) location.reload();
   }
   if (!saved) renderRules(current);
+}
+
+async function pickSoulseekAccess(access) {
+  const current = rules.current;
+  if (!current || access === current.soulseek) return;
+  const name = ACCESS_NAMES[access];
+  const done = `Soulseek: ${name.toLowerCase()}`;
+  let saved;
+  if (ACCESS_REACH[access] < ACCESS_REACH[current.soulseek]) {
+    // It signs people out mid-transfer: say so first.
+    const ok = await askDialog({
+      title: `SOULSEEK: ${name}?`,
+      text: ACCESS_NOTES[access] + " Searches, transfers and quality upgrades in progress for them stop now.",
+      submit: access === "off" ? "[ TURN IT OFF ]" : "[ CAPTAINS ONLY ]",
+      danger: true,
+    });
+    saved = ok && await saveRules({ soulseek: access }, done);
+  } else {
+    saved = await saveRules({ soulseek: access }, done);
+  }
+  if (!saved) renderRules(current);
+}
+
+async function pickSharingRule(sharing) {
+  const current = rules.current;
+  if (!current || sharing === current.soulseek_sharing) return;
+  const done = `Soulseek sharing: ${ACCESS_NAMES[sharing].toLowerCase()}`;
+  if (ACCESS_REACH[sharing] < ACCESS_REACH[current.soulseek_sharing]) {
+    if (!await saveRules({ soulseek_sharing: sharing }, done)) renderRules(current);
+    return;
+  }
+  // More uploads would leave from this server: prove it is you, as for 2FA.
+  const res = await askUntil({
+    title: `SOULSEEK SHARING: ${ACCESS_NAMES[sharing]}?`,
+    text: SHARING_NOTES[sharing] + " Nobody starts sharing until they choose to. Confirm with your password and a code.",
+    fields: [PASSWORD_FIELD, SECOND_FACTOR_FIELD],
+    submit: "[ ALLOW SHARING ]",
+    danger: true,
+    validate: reauthProblem,
+  }, (values) => api("/api/admin/settings", { method: "PATCH", body: { soulseek_sharing: sharing, ...values } }));
+  if (res) {
+    renderRules(res);
+    toast(done);
+    loadCrew();
+  } else {
+    renderRules(current);
+  }
 }
 
 async function saveIssuer(event) {
@@ -5732,7 +5828,58 @@ function crewRow(member) {
         locked ? h("span", { class: "locked" }, `  LOCKED ${formatDate(member.locked_at)}: too many failed logins`) : null)),
     h("div", { class: member.role === "captain" ? "rank captain" : "rank" }, RANKS[member.role] || member.role),
     h("div", { class: "crew-tracks" }, `${member.tracks} FILES`),
-    h("div", { class: "crew-actions" }, actions));
+    h("div", { class: "crew-actions" }, actions),
+    h("div", { class: "crew-slsk" },
+      crewSlskChoice(member, "soulseek", "SOULSEEK",
+        member.soulseek_allowed ? "CAN USE IT" : "CAN'T USE IT"),
+      crewSlskChoice(member, "sharing", "SHARING",
+        member.soulseek_sharing_allowed ? "CAN SHARE" : "CAN'T SHARE")));
+}
+
+const OVERRIDE_NAMES = { auto: "AUTO", allowed: "ALLOWED", blocked: "BLOCKED" };
+const OVERRIDE_REACH = { blocked: 0, auto: 1, allowed: 2 };
+
+/**
+ * One member's choice over a Soulseek switch: AUTO follows the switch,
+ * ALLOWED/BLOCKED decide for them (an OFF switch still wins).
+ */
+function crewSlskChoice(member, key, label, outcome) {
+  const current = member.soulseek[key];
+  const field = key === "soulseek" ? "soulseek" : "soulseek_sharing";
+  const pick = async (choice) => {
+    if (choice === current) return;
+    const done = `${member.username}: ${label.toLowerCase()} ${OVERRIDE_NAMES[choice].toLowerCase()}`;
+    if (key === "sharing" && OVERRIDE_REACH[choice] > OVERRIDE_REACH[current]) {
+      // More uploads could leave from this server: prove it is you.
+      const res = await askUntil({
+        title: `${member.username.toUpperCase()}: SHARING ${OVERRIDE_NAMES[choice]}?`,
+        text: (choice === "allowed"
+          ? "They may share their own library whatever the sharing switch says for their rank (unless it is OFF)"
+          : "They follow the sharing switch again") +
+          ", if they turn sharing on themselves. Shared files are uploaded from this server's internet " +
+          "connection. Confirm with your password and a code.",
+        fields: [PASSWORD_FIELD, SECOND_FACTOR_FIELD],
+        submit: "[ ALLOW ]",
+        danger: true,
+        validate: reauthProblem,
+      }, (values) => api(`/api/users/${member.id}`, { method: "PATCH", body: { [field]: choice, ...values } }));
+      if (res) { toast(done); loadCrew(); }
+      return;
+    }
+    crewAction(() => api(`/api/users/${member.id}`, { method: "PATCH", body: { [field]: choice } }), done);
+  };
+  return h("div", { class: "crew-slsk-choice" },
+    h("span", { class: "crew-slsk-label", id: `crew-${key}-${member.id}` }, `${label}:`),
+    h("div", { class: "chips", role: "radiogroup", "aria-labelledby": `crew-${key}-${member.id}` },
+      ...Object.entries(OVERRIDE_NAMES).map(([choice, name]) => h("button", {
+        type: "button",
+        class: choice === current ? "chip active" : "chip",
+        role: "radio",
+        "aria-checked": String(choice === current),
+        onclick: () => pick(choice),
+      }, name))),
+    h("span", { class: member.soulseek_allowed && (key === "soulseek" || member.soulseek_sharing_allowed)
+      ? "crew-slsk-outcome" : "crew-slsk-outcome dim" }, `→ ${outcome}`));
 }
 
 function renderCrew(members) {
@@ -5899,6 +6046,12 @@ document.addEventListener("DOMContentLoaded", () => {
   chipGroup(".crew-rank .chip", (chip) => { state.crewRole = chip.dataset.role; });
   for (const chip of document.querySelectorAll("#rule-2fa .chip")) {
     chip.addEventListener("click", () => pickTwoFactorRule(chip.dataset.policy));
+  }
+  for (const chip of document.querySelectorAll("#rule-slsk .chip")) {
+    chip.addEventListener("click", () => pickSoulseekAccess(chip.dataset.access));
+  }
+  for (const chip of document.querySelectorAll("#rule-share .chip")) {
+    chip.addEventListener("click", () => pickSharingRule(chip.dataset.sharing));
   }
   $("#rule-issuer-form").addEventListener("submit", saveIssuer);
   $("#rule-length-form").addEventListener("submit", saveLength);

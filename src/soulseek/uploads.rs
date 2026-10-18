@@ -1,6 +1,7 @@
 //! Sharing: other Soulseek users browsing and downloading from us.
 //!
-//! Off by default. When a user turns it on, the tracks in *their* Inkult
+//! Off by default, and only possible while the captains' rules allow
+//! sharing (see `rules`). When a user turns it on, the tracks in *their* Inkult
 //! library (the files they own, nobody else's) are shared read-only under
 //! a virtual `inkult\…` folder; real filesystem paths are never revealed and
 //! only files in that index can ever be read. Many Soulseek users refuse to
@@ -27,8 +28,10 @@ use super::messages::{
     ConnKind, FileAttrs, PeerMessage, SearchReply, ServerRequest, SharedDir, SharedFile, UserInfo,
 };
 use super::peer::PeerConn;
+use super::rules::SoulseekRules;
 use super::session::{Session, Waiters};
 use super::{SoulseekError, now_ms};
+use crate::auth::{Role, UserId};
 use crate::jobs::lock;
 
 /// Root of the virtual folder our shares appear under.
@@ -92,7 +95,12 @@ struct ShareIndex {
 }
 
 pub(super) struct Uploads {
-    sharing: AtomicBool,
+    /// The user's own choice; they share only while the rules allow it.
+    wanted: AtomicBool,
+    rules: SoulseekRules,
+    owner: UserId,
+    /// The owner's rank, which the sharing rule may depend on.
+    captain: AtomicBool,
     index: Mutex<Arc<ShareIndex>>,
     items: Mutex<Vec<Upload>>,
     next_id: Mutex<u64>,
@@ -103,9 +111,12 @@ pub(super) struct Uploads {
 }
 
 impl Uploads {
-    pub fn new(sharing: bool) -> Self {
+    pub fn new(wanted: bool, rules: SoulseekRules, owner: UserId, role: Role) -> Self {
         Self {
-            sharing: AtomicBool::new(sharing),
+            wanted: AtomicBool::new(wanted),
+            rules,
+            owner,
+            captain: AtomicBool::new(role.is_captain()),
             index: Mutex::new(Arc::new(ShareIndex::default())),
             items: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
@@ -115,8 +126,27 @@ impl Uploads {
         }
     }
 
+    /// Whether the user turned sharing on (it may be off by the rules).
+    pub fn wanted(&self) -> bool {
+        self.wanted.load(Ordering::Relaxed)
+    }
+
+    fn role(&self) -> Role {
+        if self.captain.load(Ordering::Relaxed) {
+            Role::Captain
+        } else {
+            Role::Pirate
+        }
+    }
+
+    /// Whether the rules let the owner share.
+    pub fn allowed(&self) -> bool {
+        self.rules.may_share(self.owner, self.role())
+    }
+
+    /// Whether the library is shared right now.
     pub fn sharing(&self) -> bool {
-        self.sharing.load(Ordering::Relaxed)
+        self.wanted() && self.allowed()
     }
 
     /// (folders, files) currently shared.
@@ -207,14 +237,35 @@ fn matches_query(path: &str, query: &str) -> bool {
 }
 
 impl Session {
-    /// Turn sharing of the user's library on or off.
-    pub async fn set_sharing(self: &Arc<Self>, share: bool) {
-        self.uploads.sharing.store(share, Ordering::Relaxed);
+    /// Turn sharing of the user's library on or off. Turning it on is
+    /// refused while the rules do not allow sharing.
+    pub async fn set_sharing(self: &Arc<Self>, share: bool) -> Result<(), SoulseekError> {
+        if share && !self.uploads.allowed() {
+            return Err(SoulseekError::SharingDisabled);
+        }
+        self.uploads.wanted.store(share, Ordering::Relaxed);
         self.ctx
             .store
             .update(self.owner, |a| a.share_library = share)
             .await;
-        if !share {
+        self.apply_sharing().await;
+        Ok(())
+    }
+
+    /// The owner's rank or their overrides changed: the sharing rule may
+    /// now treat them differently.
+    pub(super) async fn set_role(self: &Arc<Self>, role: Role) {
+        self.uploads
+            .captain
+            .store(role.is_captain(), Ordering::Relaxed);
+        self.apply_sharing().await;
+    }
+
+    /// Bring what is shared in line with the user's choice and the rules:
+    /// when not sharing, every upload still queued or running is cancelled
+    /// and the peers are told; either way the server learns the counts.
+    pub(super) async fn apply_sharing(self: &Arc<Self>) {
+        if !self.uploads.sharing() {
             let denied: Vec<(String, String)> = {
                 let mut items = lock(&self.uploads.items);
                 items
@@ -310,10 +361,14 @@ impl Session {
         }
     }
 
+    /// What peers may see: nothing at all while not sharing, even before
+    /// `refresh_shares` has emptied the index after the rules changed.
     async fn share_index(&self) -> Arc<ShareIndex> {
+        if !self.uploads.sharing() {
+            return Arc::new(ShareIndex::default());
+        }
         let current = Arc::clone(&lock(&self.uploads.index));
-        if self.uploads.sharing() && now_ms().saturating_sub(current.built_at_ms) > INDEX_MAX_AGE_MS
-        {
+        if now_ms().saturating_sub(current.built_at_ms) > INDEX_MAX_AGE_MS {
             self.refresh_shares().await;
             return Arc::clone(&lock(&self.uploads.index));
         }
