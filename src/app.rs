@@ -20,7 +20,10 @@ use crate::domain::length::{Clock, HiddenTooLong};
 use crate::domain::provider::{ProviderKind, TrackKey};
 use crate::domain::quality::OutputFormat;
 use crate::jobs::{EnqueueError, JobId, JobManager, JobSnapshot, Viewer};
-use crate::library::archive::{self, ArchiveFile, PreparedArchive, PreparedArchives};
+use crate::library::archive::{
+    self, ArchiveFile, ArchiveStreams, PreparedArchive, PreparedArchives, StreamSlot,
+};
+use crate::library::sanitize::sanitize_component;
 use crate::library::{Library, LibraryEntry, LibraryError, Removal, RemoveFrom};
 use crate::metadata::{clean_artists, clean_text};
 use crate::playback::range::ByteRange;
@@ -62,6 +65,8 @@ pub enum AppError {
     NotFound,
     #[error("only the captain may do that")]
     Forbidden,
+    #[error("{0}")]
+    TooBusy(String),
     #[error(transparent)]
     Auth(#[from] AuthError),
     #[error(transparent)]
@@ -393,6 +398,7 @@ pub struct App {
     ffmpeg: Arc<Ffmpeg>,
     tool_status: RwLock<Vec<ToolStatus>>,
     archives: PreparedArchives,
+    archive_streams: ArchiveStreams,
 }
 
 impl App {
@@ -424,6 +430,7 @@ impl App {
             ffmpeg,
             tool_status: RwLock::new(Vec::new()),
             archives: PreparedArchives::default(),
+            archive_streams: ArchiveStreams::default(),
         };
         app.refresh_tools().await;
         app
@@ -1136,6 +1143,7 @@ impl App {
     ) -> Result<ArchiveTicket, AppError> {
         let refs = Self::bulk_files(request.files)?;
         let mut files = Vec::with_capacity(refs.len());
+        let mut sources = Vec::with_capacity(refs.len());
         let mut missing = 0;
         for file in &refs {
             let Ok((entry, path)) = self
@@ -1149,15 +1157,23 @@ impl App {
                 missing += 1;
                 continue;
             };
-            let name = archive::entry_name(&entry.path)
-                .or_else(|| entry.path.file_name()?.to_str().map(str::to_owned))
-                .unwrap_or_else(|| "track".to_owned());
+            // A path refused as an archive name (see `entry_name`) still
+            // gets its file, under a sanitized file name at the top level.
+            let name = archive::entry_name(&entry.path).unwrap_or_else(|| {
+                let raw = entry
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                sanitize_component(&raw, "track")
+            });
             files.push(ArchiveFile {
                 name: archive::fit_name(name),
                 path,
                 size: meta.len(),
                 modified: meta.modified().ok(),
             });
+            sources.push((entry.key, entry.output));
         }
         if files.is_empty() {
             return Err(AppError::BadRequest(
@@ -1178,13 +1194,52 @@ impl App {
             missing,
         };
         tracing::info!(user = %actor.username, files = ticket.files, bytes = ticket.bytes, "archive prepared");
-        let id = self.archives.insert(actor.id, file_name, files);
+        let id = self.archives.insert(actor.id, file_name, files, sources);
         Ok(ArchiveTicket { id, ..ticket })
     }
 
-    /// An archive the actor prepared, to be sent.
-    pub fn prepared_archive(&self, actor: &User, id: &str) -> Result<PreparedArchive, AppError> {
-        self.archives.get(id, actor.id).ok_or(AppError::NotFound)
+    /// An archive the actor prepared, to be sent now, with a slot counting
+    /// it as running. Access is checked again: a file the actor lost (or
+    /// that was deleted or replaced) since preparing is left out, and sizes
+    /// are read afresh so the announced length is right.
+    pub async fn prepared_archive(
+        &self,
+        actor: &User,
+        id: &str,
+    ) -> Result<(PreparedArchive, StreamSlot), AppError> {
+        let mut prepared = self.archives.get(id, actor.id).ok_or(AppError::NotFound)?;
+        let slot = self.archive_streams.start(actor.id).ok_or_else(|| {
+            AppError::TooBusy(
+                "other ZIP downloads are still running; wait for them to finish".into(),
+            )
+        })?;
+        let mut files = Vec::with_capacity(prepared.files.len());
+        for (file, (key, output)) in prepared.files.drain(..).zip(&prepared.sources) {
+            let Some(entry) = self
+                .library
+                .find(key, *output)
+                .await
+                .filter(|e| Self::can_access(actor, e))
+            else {
+                continue;
+            };
+            if self.library.file_path(&entry).await.as_ref() != Some(&file.path) {
+                continue;
+            }
+            let Ok(meta) = tokio::fs::metadata(&file.path).await else {
+                continue;
+            };
+            files.push(ArchiveFile {
+                size: meta.len(),
+                modified: meta.modified().ok(),
+                ..file
+            });
+        }
+        if files.is_empty() {
+            return Err(AppError::NotFound);
+        }
+        prepared.files = files;
+        Ok((prepared, slot))
     }
 
     /// Share several library tracks in a room at once. Either all of them

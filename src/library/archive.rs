@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -23,6 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::auth::UserId;
 use crate::auth::password::random_id;
 use crate::domain::metadata::ReleaseDate;
+use crate::domain::provider::TrackKey;
+use crate::domain::quality::OutputFormat;
 
 const LOCAL_HEADER: u32 = 0x0403_4b50;
 const CENTRAL_HEADER: u32 = 0x0201_4b50;
@@ -40,6 +42,9 @@ const FILE_MODE: u32 = 0o100_644;
 const MAX_32: u64 = 0xFFFF_FFFF;
 const MAX_16: u64 = 0xFFFF;
 const BUFFER: usize = 256 * 1024;
+/// A download whose client takes no data for this long is dropped, so a
+/// stalled connection cannot hold an archive slot (and open files) forever.
+const WRITE_STALL: Duration = Duration::from_secs(120);
 
 /// One file in the archive.
 #[derive(Debug, Clone)]
@@ -53,12 +58,18 @@ pub struct ArchiveFile {
 
 /// The archive name of a library-relative path: its folders kept, so the
 /// download unpacks into the same Artist/Album layout. `None` for anything
-/// that is not a plain relative path.
+/// that is not a plain relative path, or whose parts an unzip tool on some
+/// platform could read as a path of its own (`\`, `:` drive letters,
+/// control characters). Library names never contain those; this guards
+/// against a damaged or hand-edited index steering files out of the
+/// folder the user unpacks into.
 pub fn entry_name(relative: &Path) -> Option<String> {
     let parts: Option<Vec<&str>> = relative
         .components()
         .map(|c| match c {
-            Component::Normal(part) => part.to_str(),
+            Component::Normal(part) => part
+                .to_str()
+                .filter(|p| !p.chars().any(|c| c == '\\' || c == ':' || c.is_control())),
             _ => None,
         })
         .collect();
@@ -111,9 +122,9 @@ pub async fn write_archive<W: AsyncWrite + Unpin>(
     let mut offset = 0u64;
     let mut central = Vec::with_capacity(files.len());
     for file in files {
-        let crc = checksum(file, &mut buf).await?;
+        let crc = checksum(file, &mut buf, out).await?;
         let header = local_header(file, crc);
-        out.write_all(&header).await?;
+        send(out, &header).await?;
         copy_verified(file, crc, &mut buf, out).await?;
         central.push((file, crc, offset));
         offset += header.len() as u64 + file.size;
@@ -121,16 +132,43 @@ pub async fn write_archive<W: AsyncWrite + Unpin>(
     let mut directory = 0u64;
     for (file, crc, at) in central {
         let header = central_header(file, crc, at);
-        out.write_all(&header).await?;
+        send(out, &header).await?;
         directory += header.len() as u64;
     }
-    out.write_all(&end_records(files.len(), directory, offset))
-        .await?;
-    out.flush().await
+    send(out, &end_records(files.len(), directory, offset)).await?;
+    tokio::time::timeout(WRITE_STALL, out.flush())
+        .await
+        .map_err(|_| stalled())?
+}
+
+async fn send<W: AsyncWrite + Unpin>(out: &mut W, bytes: &[u8]) -> io::Result<()> {
+    tokio::time::timeout(WRITE_STALL, out.write_all(bytes))
+        .await
+        .map_err(|_| stalled())?
+}
+
+/// Fails once the reading side of `out` is gone. An empty write reports a
+/// closed pipe as an error; it is polled once only, so a full (but open)
+/// buffer does not block the caller.
+async fn still_open<W: AsyncWrite + Unpin>(out: &mut W) -> io::Result<()> {
+    match tokio::time::timeout(Duration::ZERO, out.write(&[])).await {
+        Ok(Err(e)) => Err(e),
+        _ => Ok(()),
+    }
+}
+
+fn stalled() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "the client stopped reading")
 }
 
 /// The file's CRC-32, checking it still has the size it was listed with.
-async fn checksum(file: &ArchiveFile, buf: &mut [u8]) -> io::Result<u32> {
+/// Nothing is sent meanwhile, so `out` is probed between reads: a client
+/// that went away stops a multi-gigabyte read pass right away.
+async fn checksum<W: AsyncWrite + Unpin>(
+    file: &ArchiveFile,
+    buf: &mut [u8],
+    out: &mut W,
+) -> io::Result<u32> {
     let mut reader = tokio::fs::File::open(&file.path).await?;
     let mut hasher = crc32fast::Hasher::new();
     let mut read = 0u64;
@@ -141,6 +179,7 @@ async fn checksum(file: &ArchiveFile, buf: &mut [u8]) -> io::Result<u32> {
         }
         hasher.update(&buf[..n]);
         read += n as u64;
+        still_open(out).await?;
     }
     if read != file.size {
         return Err(changed(file));
@@ -165,7 +204,7 @@ async fn copy_verified<W: AsyncWrite + Unpin>(
             return Err(changed(file));
         }
         hasher.update(&buf[..n]);
-        out.write_all(&buf[..n]).await?;
+        send(out, &buf[..n]).await?;
         left -= n as u64;
     }
     if hasher.finalize() != crc || reader.read(&mut buf[..1]).await? != 0 {
@@ -368,6 +407,9 @@ pub struct PreparedArchive {
     pub owner: UserId,
     pub file_name: String,
     pub files: Vec<ArchiveFile>,
+    /// The library file behind each of `files` (same order), so access can
+    /// be checked again when the archive is fetched.
+    pub sources: Vec<(TrackKey, OutputFormat)>,
     created: Instant,
 }
 
@@ -379,7 +421,14 @@ pub struct PreparedArchives {
 }
 
 impl PreparedArchives {
-    pub fn insert(&self, owner: UserId, file_name: String, files: Vec<ArchiveFile>) -> String {
+    pub fn insert(
+        &self,
+        owner: UserId,
+        file_name: String,
+        files: Vec<ArchiveFile>,
+        sources: Vec<(TrackKey, OutputFormat)>,
+    ) -> String {
+        debug_assert_eq!(files.len(), sources.len());
         let id = format!("{:016x}{:016x}", random_id(), random_id());
         let mut tickets = self.lock();
         tickets.retain(|_, t| t.created.elapsed() < TICKET_TTL);
@@ -399,6 +448,7 @@ impl PreparedArchives {
                 owner,
                 file_name,
                 files,
+                sources,
                 created: Instant::now(),
             },
         );
@@ -416,6 +466,59 @@ impl PreparedArchives {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PreparedArchive>> {
         // The map holds no invariant a panicking holder could break.
         self.tickets.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Archive downloads one user may run at once. Each reads its files twice
+/// (checksum, then send), so a few are plenty for a person and bound the
+/// disk load one account can cause.
+const STREAMS_PER_USER: usize = 2;
+/// Archive downloads running at once on the whole server.
+const STREAMS_TOTAL: usize = 8;
+
+/// Counts running archive downloads; see [`ArchiveStreams::start`].
+#[derive(Debug, Default)]
+pub struct ArchiveStreams {
+    running: Arc<Mutex<HashMap<UserId, usize>>>,
+}
+
+/// One running archive download; dropping it ends the count.
+#[derive(Debug)]
+pub struct StreamSlot {
+    running: Arc<Mutex<HashMap<UserId, usize>>>,
+    user: UserId,
+}
+
+impl ArchiveStreams {
+    /// A slot for a new download by `user`, or `None` if they (or the
+    /// server) already run as many as allowed.
+    pub fn start(&self, user: UserId) -> Option<StreamSlot> {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        let total: usize = running.values().sum();
+        let mine = running.entry(user).or_default();
+        if *mine >= STREAMS_PER_USER || total >= STREAMS_TOTAL {
+            if *mine == 0 {
+                running.remove(&user);
+            }
+            return None;
+        }
+        *mine += 1;
+        Some(StreamSlot {
+            running: Arc::clone(&self.running),
+            user,
+        })
+    }
+}
+
+impl Drop for StreamSlot {
+    fn drop(&mut self) {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = running.get_mut(&self.user) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                running.remove(&self.user);
+            }
+        }
     }
 }
 
@@ -492,6 +595,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_closed_download_stops_the_checksum_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = file(dir.path(), "big.flac", &vec![1u8; 4 * BUFFER]);
+        let (mut writer, reader) = tokio::io::duplex(64);
+        drop(reader);
+        let mut buf = vec![0u8; BUFFER];
+        let err = checksum(&big, &mut buf, &mut writer).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
     async fn empty_archive_is_just_the_end_record() {
         let mut zip = Vec::new();
         write_archive(&[], &mut zip).await.unwrap();
@@ -541,6 +655,9 @@ mod tests {
         assert_eq!(entry_name(Path::new("../x.flac")), None);
         assert_eq!(entry_name(Path::new("/etc/passwd")), None);
         assert_eq!(entry_name(Path::new("")), None);
+        assert_eq!(entry_name(Path::new("A/..\\..\\evil.flac")), None);
+        assert_eq!(entry_name(Path::new("C:evil.flac")), None);
+        assert_eq!(entry_name(Path::new("A/b\nc.flac")), None);
     }
 
     #[test]
@@ -569,12 +686,30 @@ mod tests {
     fn prepared_archives_belong_to_their_user_and_are_capped() {
         let archives = PreparedArchives::default();
         let ids: Vec<String> = (0..TICKETS_PER_USER + 1)
-            .map(|_| archives.insert(UserId(1), "a.zip".into(), Vec::new()))
+            .map(|_| archives.insert(UserId(1), "a.zip".into(), Vec::new(), Vec::new()))
             .collect();
         assert!(archives.get(&ids[0], UserId(1)).is_none(), "oldest dropped");
         assert!(archives.get(&ids[1], UserId(1)).is_some());
         assert!(archives.get(&ids[1], UserId(2)).is_none());
         assert!(archives.get("nope", UserId(1)).is_none());
+    }
+
+    #[test]
+    fn archive_streams_are_limited_per_user_and_in_total() {
+        let streams = ArchiveStreams::default();
+        let a: Vec<_> = (0..STREAMS_PER_USER)
+            .map(|_| streams.start(UserId(1)).unwrap())
+            .collect();
+        assert!(streams.start(UserId(1)).is_none());
+        drop(a);
+        assert!(streams.start(UserId(1)).is_some(), "slots come back");
+        let all: Vec<_> = (0..STREAMS_TOTAL as u64)
+            .filter_map(|i| streams.start(UserId(100 + i)))
+            .collect();
+        assert_eq!(all.len(), STREAMS_TOTAL);
+        assert!(streams.start(UserId(7)).is_none());
+        drop(all);
+        assert!(streams.running.lock().unwrap().is_empty());
     }
 
     #[test]

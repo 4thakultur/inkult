@@ -306,6 +306,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::TooBusy(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Auth(e) => match e {
                 AuthError::InvalidInput(_) => StatusCode::BAD_REQUEST,
                 AuthError::UsernameTaken => StatusCode::CONFLICT,
@@ -977,11 +978,12 @@ async fn download_archive(
     Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let prepared = app.prepared_archive(&user, &id)?;
+    let (prepared, slot) = app.prepared_archive(&user, &id).await?;
     let length = crate::library::archive::archive_len(&prepared.files);
     let (mut writer, reader) = tokio::io::duplex(256 * 1024);
     let username = user.username.clone();
     tokio::spawn(async move {
+        let _slot = slot;
         if let Err(e) = crate::library::archive::write_archive(&prepared.files, &mut writer).await {
             // A closed connection (the user cancelled) is not worth a warning.
             if e.kind() == std::io::ErrorKind::BrokenPipe {
