@@ -1095,6 +1095,10 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
 .lib-bulk.active { border-color: var(--line); }
 .bulk-actions { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-left: auto; }
 .bulk-clear { order: 1; }
+/* Phone-only parts of a library row (see the phone block below). */
+.lib-facts, .more-btn { display: none; }
+/* Touch layouts make chips inline-flex, which drops a leading space. */
+.sort-dir { white-space: pre; }
 .quality-cell { color: var(--mid); }
 .added-cell { color: var(--mid); white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* "added" only prefixes the date where the column heading is gone. */
@@ -1709,6 +1713,60 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
 
 /* Touch screens (phones, iPads at any width): finger-sized targets, no
    hover-only affordances, and 16px inputs so iOS Safari doesn't zoom in. */
+/* ---------- Phones: library ----------
+   Each track is tick · cover · four lines · [...]: title, artist, the
+   quality (with the format picker), then the small print (lossless,
+   spectrum, source, date, crew) on one dim line. The row's buttons fold
+   into the [...] sheet, and the scope and sort chips are one swipeable
+   line each, so the list starts near the top and reads as a list. */
+@media (max-width: 640px) {
+  #library-scope, #library-sort {
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 4px 0 8px; gap: 0 16px;
+    margin-inline: calc(-16px - var(--safe-l)) calc(-16px - var(--safe-r));
+    padding-inline: calc(16px + var(--safe-l)) calc(16px + var(--safe-r));
+  }
+  #library-scope::-webkit-scrollbar, #library-sort::-webkit-scrollbar { display: none; }
+  #library-scope > *, #library-sort > * { flex: none; white-space: nowrap; }
+  #library-sort { margin-bottom: 10px; }
+  #view-library .view-header { margin-bottom: 4px; }
+
+  .lib-row {
+    grid-template-columns: auto var(--art) minmax(0, 1fr) auto; column-gap: 10px; row-gap: 1px;
+    align-items: center; padding: 12px 0;
+  }
+  .lib-row .pick { grid-column: 1; grid-row: 1 / 4; min-width: 3ch; justify-content: flex-start; }
+  .lib-row .art-play { margin-right: 2px; }
+  .lib-row .art-play { grid-column: 2; grid-row: 1 / 4; align-self: center; }
+  .lib-row .title-cell { grid-column: 3; grid-row: 1; min-width: 0; }
+  .lib-row .title-cell .owners { display: none; }
+  .lib-row .title, .lib-row .subtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The quality may take a second line (hi-res FLAC with its bitrate)
+     rather than be cut: it is what a DJ scans the list for. */
+  .lib-row .quality-cell { grid-column: 3; grid-row: 2; display: block; min-width: 0; font-size: .86em; line-height: 1.4; }
+  .lib-row .quality-cell > div { display: none; }
+  /* The format picker reads as a label ("LOSSLESS ▾") in front of the quality. */
+  .lib-row .format-select {
+    display: inline; margin: 0 .6ch 0 0; padding: 0; min-height: 0; font-size: 1em;
+    border: 0; border-bottom: 1px dotted var(--line); background: none; color: var(--bright);
+  }
+  .lib-row .added-cell { display: none; }
+  .lib-facts {
+    display: block; grid-column: 3; grid-row: 3; min-width: 0; font-size: .82em; line-height: 1.4;
+    color: var(--dim); text-transform: uppercase;
+  }
+  /* Facts wrap whole: the separator stays with the fact before it. */
+  .lib-facts .fact { white-space: nowrap; }
+  .lib-facts .fact:not(:last-child)::after { content: " ·"; color: var(--faint); }
+  .lib-facts .lossless { color: var(--fg); }
+  .lib-facts .bad { color: var(--warn); }
+  .lib-row .row-actions { grid-column: 4; grid-row: 1 / 4; align-self: center; margin: 0; }
+  .lib-row .row-actions > :not(.more-btn) { display: none; }
+  .lib-row .more-btn { display: inline-flex; }
+
+  /* Nothing ticked: the bar is only the select-all box. */
+  .lib-bulk:not(.active) .bulk-clear, .lib-bulk:not(.active) .bulk-actions { display: none; }
+}
+
 @media (pointer: coarse) {
   .icon-btn, .btn, .chip, .nav-item, .play-toggle {
     min-height: 44px; display: inline-flex; align-items: center; justify-content: center;

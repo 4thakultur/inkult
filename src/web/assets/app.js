@@ -1699,18 +1699,69 @@ function libraryRow(versions) {
     addedCell(versions),
     h("div", { class: "quality-cell", title: qualityTitle(entry) },
       picker,
-      keepUnits(entry.quality.summary),
+      // A wrapped quality line breaks after a "·", never before it.
+      h("span", { class: "q-summary" }, keepUnits(entry.quality.summary).replace(/ · /g, "\u00a0· ")),
       entry.quality.converted_from ? h("div", { class: "converted" }, `from ${entry.quality.converted_from}`) : null,
       entry.obtained_from && entry.obtained_from.startsWith("slsk://")
         ? h("div", { class: "converted" }, "via Soulseek") : null,
       spectrumLine(entry.quality),
       entry.quality.lossless ? h("div", { class: "lossless" }, "lossless") : null),
-    h("div", { class: "row-actions" },
-      shareButton(entry),
-      convertButton(entry),
-      saveLink(libraryFileUrl(entry.key.provider, entry.key.id, entry.output), String(entry.path), entry.title),
-      removeButton(entry, versions.length)));
+    libraryFacts(entry, versions),
+    rowActions(entry, versions));
   return row;
+}
+
+/**
+ * The row's small print on one line, for phones, where the quality,
+ * added and crew columns would each take a line: the quality cell keeps
+ * only the format picker and summary there.
+ */
+function libraryFacts(entry, versions) {
+  const fact = (text, cls = "") => h("span", { class: `fact ${cls}`.trim() }, text);
+  const check = entry.quality.spectrum;
+  const added = trackAdded(versions);
+  const facts = [
+    entry.quality.lossless ? fact("lossless", "lossless") : null,
+    check ? fact(SPECTRUM_SHORT[check.verdict] || check.verdict,
+      check.verdict === "lossy" || check.verdict === "upsampled" ? "bad" : "") : null,
+    entry.quality.converted_from ? fact(`from ${entry.quality.converted_from}`) : null,
+    entry.obtained_from && entry.obtained_from.startsWith("slsk://") ? fact("via Soulseek") : null,
+    added ? fact(formatAdded(added)) : null,
+    entry.owned_by ? fact(entry.owned_by.length ? `crew: ${entry.owned_by.join(", ")}` : "crew: nobody") : null,
+  ].filter(Boolean);
+  // Plain spaces between the facts are where the line may wrap.
+  return h("div", { class: "lib-facts", "aria-hidden": "true" },
+    ...facts.flatMap((f, i) => (i ? [" ", f] : [f])));
+}
+
+/**
+ * The row's buttons. On phones they fold into one [...] button opening a
+ * sheet, so each row is not a toolbar; picking an action presses the
+ * (hidden) button, which then works as on wide screens.
+ */
+function rowActions(entry, versions) {
+  const share = shareButton(entry);
+  const convert = convertButton(entry);
+  const save = saveLink(libraryFileUrl(entry.key.provider, entry.key.id, entry.output), String(entry.path), entry.title);
+  const remove = removeButton(entry, versions.length);
+  const more = h("button", {
+    class: "icon-btn more-btn", type: "button", title: "Actions…",
+    "aria-label": `Actions for ${entry.title}`, "aria-haspopup": "menu", "aria-expanded": "false",
+  }, "…");
+  const format = OUTPUT_SHORT[entry.output] || entry.output;
+  more.addEventListener("click", () => {
+    const actions = { share, convert, save, remove };
+    openFormatMenu(more, (id) => actions[id].click(), {
+      title: entry.title,
+      choices: [
+        { id: "share", label: "Send to a chat room", detail: "Share it with a room you are in" },
+        { id: "convert", label: convert.title.replace(/…$/, ""), detail: `From ${format}`, disabled: convert.disabled },
+        { id: "save", label: "Save to this device", detail: String(entry.path).split(/[\\/]/).pop() },
+        { id: "remove", label: "Delete", detail: `This format (${format}); asks first` },
+      ],
+    });
+  });
+  return h("div", { class: "row-actions" }, share, convert, save, remove, more);
 }
 
 // ---------- library bulk actions ----------
@@ -1793,7 +1844,7 @@ function renderBulkBar() {
     h("span", { class: picked ? "bulk-count" : "bulk-count dim" },
       picked
         ? `${plural(picked, "TRACK")} SELECTED` + (hidden ? ` (${hidden} HIDDEN BY FILTER)` : "")
-        : "SELECT TRACKS FOR BULK ACTIONS"),
+        : PHONE.matches ? "SELECT ALL" : "SELECT TRACKS FOR BULK ACTIONS"),
     h("span", { class: "bulk-clear" }, action("CLEAR", "Untick every track", () => setSelection([]))),
     h("span", { class: "bulk-actions" },
       action("SAVE", "Save the selected files to this device (one ZIP)", bulkSave),
