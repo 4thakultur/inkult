@@ -30,8 +30,9 @@ use super::common::{
     summary_from_entry,
 };
 use super::{
-    ArtistLink, ArtistPage, Collection, DownloadedMedia, MusicProvider, ProviderError, Resolved,
-    SearchDetail, StreamSource, SummaryYear, TrackDetails, TrackSummary, UrlKind, YearBasis,
+    ArtistLink, ArtistPage, Collection, DownloadedMedia, MediaEngine, MusicProvider, ProviderError,
+    Resolved, SearchDetail, StreamSource, SummaryYear, TrackDetails, TrackSummary, UrlKind,
+    YearBasis,
 };
 use crate::domain::DownloadProgress;
 use serde_json::Value;
@@ -623,7 +624,11 @@ impl MusicProvider for SoundCloudProvider {
         })
     }
 
-    async fn stream_source(&self, url: &Url) -> Result<StreamSource, ProviderError> {
+    async fn stream_source(
+        &self,
+        url: &Url,
+        engine: MediaEngine,
+    ) -> Result<StreamSource, ProviderError> {
         let Some((UrlKind::Track, canonical)) = parse(url) else {
             return Err(ProviderError::UnsupportedUrl);
         };
@@ -632,7 +637,7 @@ impl MusicProvider for SoundCloudProvider {
             .info(&canonical)
             .await
             .map_err(|e| classify_error(KIND, e))?;
-        pick_stream(KIND, &info)
+        pick_stream(KIND, &info, engine)
     }
 
     async fn download(

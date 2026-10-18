@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -174,6 +174,23 @@ pub enum StreamTransport {
     Hls,
 }
 
+/// The media stack of the browser that will play a listening stream.
+///
+/// Safari, and every browser on iOS and iPadOS (they all must use
+/// WebKit), plays `<audio>` through Apple's AVFoundation. It plays WebM
+/// only after downloading the whole file, so a preview takes seconds to
+/// start, and it expects byte ranges and a known length for everything it
+/// plays. On the other hand it decodes AIFF and ALAC itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaEngine {
+    /// Chromium and Firefox engines: WebM, Ogg, MP4, MP3 and FLAC alike.
+    #[default]
+    Standard,
+    /// Apple's AVFoundation; see the type's documentation.
+    Apple,
+}
+
 /// A rendition the browser can play to listen to a track before it is
 /// downloaded. Only used for listening: downloads pick their format through
 /// `domain::quality` and never go through this.
@@ -284,9 +301,13 @@ pub trait MusicProvider: Send + Sync {
     /// Full metadata and available formats for a single track URL.
     async fn track_details(&self, url: &Url) -> Result<TrackDetails, ProviderError>;
 
-    /// A browser-playable stream of a single track, for listening to it
-    /// without downloading it first.
-    async fn stream_source(&self, url: &Url) -> Result<StreamSource, ProviderError>;
+    /// A stream of a single track that `engine` plays well, for listening
+    /// to it without downloading it first.
+    async fn stream_source(
+        &self,
+        url: &Url,
+        engine: MediaEngine,
+    ) -> Result<StreamSource, ProviderError>;
 
     /// Download `format` of the track into `work_dir`, without transcoding.
     async fn download(

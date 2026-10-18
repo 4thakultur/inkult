@@ -24,7 +24,13 @@
 //!
 //! HLS provider streams in AAC (all of SoundCloud) are downloaded once into
 //! a [`Capture`] and played from it, so seeking does not touch the network
-//! (see [`capture`]).
+//! (see [`capture`]). They are still seeked by `start`, but answer byte
+//! ranges with their length, which Apple's engine needs to play them as a
+//! file rather than as a live stream.
+//!
+//! The UI says which [`MediaEngine`] the browser has; it decides between
+//! renditions (YouTube's AAC rather than WebM for Apple's) and whether
+//! AIFF and ALAC library files need decoding to FLAC.
 //!
 //! Each prepared stream also has a [`Waveform`], measured by decoding the
 //! same audio the listener hears, and cached per track rather than per
@@ -52,7 +58,7 @@ use crate::auth::UserId;
 use crate::domain::provider::ProviderKind;
 use crate::domain::quality::{Codec, QualityReport};
 use crate::metadata::tagging::probe_duration;
-use crate::providers::{MusicProvider, ProviderError, StreamSource, StreamTransport};
+use crate::providers::{MediaEngine, MusicProvider, ProviderError, StreamSource, StreamTransport};
 use crate::tools::ffmpeg::{AudioPipe, Ffmpeg, PipeFormat, StreamInput};
 use crate::tools::{AbortOnDrop, ToolError};
 use capture::{Capture, CaptureError, CaptureReader, MAX_CAPTURE_BYTES};
@@ -141,7 +147,7 @@ pub enum PlaybackError {
 pub enum StreamBody {
     File(tokio::io::Take<tokio::fs::File>),
     Pipe(AudioPipe),
-    Capture(CaptureReader),
+    Capture(tokio::io::Take<CaptureReader>),
     Upstream(reqwest::Response),
 }
 
@@ -160,6 +166,8 @@ enum Source {
     Remote {
         provider: Arc<dyn MusicProvider>,
         page_url: Url,
+        /// The browser's engine, which the rendition was chosen for.
+        engine: MediaEngine,
         stream: Arc<StreamSource>,
         resolved_at: Instant,
     },
@@ -361,16 +369,18 @@ impl Playback {
         info
     }
 
-    /// Prepare listening to a provider track that need not be downloaded.
+    /// Prepare listening to a provider track that need not be downloaded,
+    /// in a browser with `engine`.
     pub async fn prepare_remote(
         &self,
         provider: Arc<dyn MusicProvider>,
         page_url: Url,
+        engine: MediaEngine,
     ) -> Result<PreparedStream, PlaybackError> {
         let reused = self.with_entries(|entries| {
             let entry = entries.iter_mut().find(|e| {
-                matches!(&e.source, Source::Remote { page_url: u, resolved_at, .. }
-                    if *u == page_url && resolved_at.elapsed() < REUSE_WINDOW)
+                matches!(&e.source, Source::Remote { page_url: u, engine: en, resolved_at, .. }
+                    if *u == page_url && *en == engine && resolved_at.elapsed() < REUSE_WINDOW)
             })?;
             entry.last_used = Instant::now();
             Some(entry.info.clone())
@@ -379,10 +389,11 @@ impl Playback {
             return Ok(info);
         }
 
-        let stream = provider.stream_source(&page_url).await?;
+        let stream = provider.stream_source(&page_url, engine).await?;
         tracing::info!(
             provider = %provider.kind(),
             url = %page_url,
+            ?engine,
             format = %stream.format.id,
             transport = ?stream.transport,
             "prepared provider stream"
@@ -397,22 +408,25 @@ impl Playback {
             Source::Remote {
                 provider,
                 page_url,
+                engine,
                 stream: Arc::new(stream),
                 resolved_at: Instant::now(),
             },
         ))
     }
 
-    /// Prepare listening to a file in the library, for `viewer` only. The
-    /// caller has checked that the viewer may access the file.
+    /// Prepare listening to a file in the library, for `viewer` only, in a
+    /// browser with `engine`. The caller has checked that the viewer may
+    /// access the file.
     pub async fn prepare_local(
         &self,
         provider: ProviderKind,
         path: PathBuf,
         quality: &QualityReport,
         viewer: UserId,
+        engine: MediaEngine,
     ) -> Result<PreparedStream, PlaybackError> {
-        let delivery = local_delivery(&path, quality.codec);
+        let delivery = local_delivery(&path, quality.codec, engine);
         let probe_path = path.clone();
         let duration_secs = tokio::task::spawn_blocking(move || probe_duration(&probe_path))
             .await
@@ -458,7 +472,20 @@ impl Playback {
         provider: &dyn MusicProvider,
         page_url: &Url,
     ) -> Result<Arc<StreamSource>, PlaybackError> {
-        let fresh = Arc::new(provider.stream_source(page_url).await?);
+        // A stream dropped from the table meanwhile has nobody to store the
+        // fresh URL for; it is only used once, by the caller.
+        let engine = self
+            .with_entries(|entries| {
+                entries
+                    .iter()
+                    .find(|e| e.info.id == id)
+                    .and_then(|e| match &e.source {
+                        Source::Remote { engine, .. } => Some(*engine),
+                        Source::Local { .. } => None,
+                    })
+            })
+            .unwrap_or_default();
+        let fresh = Arc::new(provider.stream_source(page_url, engine).await?);
         self.with_entries(|entries| {
             if let Some(Entry {
                 source:
@@ -516,13 +543,16 @@ impl Playback {
                 page_url,
                 stream,
                 resolved_at,
+                ..
             } => {
                 let kind = provider.kind();
                 if let Some(capture) =
                     self.capture_for(id, &provider, &page_url, &stream, resolved_at)
                 {
                     match capture.offset_at(start, CAPTURE_WAIT).await {
-                        Ok(Some(offset)) => return Ok(capture_response(capture.reader(offset))),
+                        Ok(Some(offset)) => {
+                            return capture_response(kind, &capture, offset, range).await;
+                        }
                         Ok(None) => {
                             return Err(PlaybackError::Upstream {
                                 provider: kind,
@@ -677,6 +707,7 @@ impl Playback {
                 page_url,
                 stream,
                 resolved_at,
+                ..
             } => (provider, page_url, stream, resolved_at),
         };
         if let Some(capture) = self.capture_for(id, &provider, &page_url, &stream, resolved_at) {
@@ -1037,14 +1068,57 @@ enum SegmentsError {
     Tool(#[from] ToolError),
 }
 
-fn capture_response(reader: CaptureReader) -> StreamResponse {
-    StreamResponse {
+/// Answer from a capture with the audio from byte `offset` (a frame start)
+/// on, as a resource of its own.
+///
+/// A range request waits for the capture to complete, so that the answer
+/// carries the length: Apple's engine asks for ranges first and treats a
+/// stream of unknown length as live (no duration, slow to start). Without
+/// a range the audio is sent at once, following the download.
+async fn capture_response(
+    provider: ProviderKind,
+    capture: &Arc<Capture>,
+    offset: u64,
+    range: Option<ByteRange>,
+) -> Result<StreamResponse, PlaybackError> {
+    let wait = if range.is_some() {
+        CAPTURE_WAIT
+    } else {
+        Duration::ZERO
+    };
+    let complete = capture
+        .complete_len(wait)
+        .await
+        .map_err(|e| PlaybackError::Upstream {
+            provider,
+            reason: e.to_string(),
+        })?;
+    let Some(total) = complete.map(|len| len.saturating_sub(offset)) else {
+        // Too slow to wait for: stream it, as for a request without range.
+        return Ok(StreamResponse {
+            content_type: PipeFormat::Adts.mime(),
+            content_length: None,
+            content_range: None,
+            ranges: true,
+            body: StreamBody::Capture(capture.reader(offset).take(u64::MAX)),
+        });
+    };
+    let (start, len, content_range) = match range.map(|r| r.resolve(total)) {
+        None => (0, total, None),
+        Some(None) => return Err(PlaybackError::RangeNotSatisfiable { total }),
+        Some(Some((start, end))) => (
+            start,
+            end - start + 1,
+            Some(format!("bytes {start}-{end}/{total}")),
+        ),
+    };
+    Ok(StreamResponse {
         content_type: PipeFormat::Adts.mime(),
-        content_length: None,
-        content_range: None,
-        ranges: false,
-        body: StreamBody::Capture(reader),
-    }
+        content_length: Some(len),
+        content_range,
+        ranges: true,
+        body: StreamBody::Capture(capture.reader(offset + start).take(len)),
+    })
 }
 
 fn pipe_response(pipe: AudioPipe, format: PipeFormat) -> StreamResponse {
@@ -1093,12 +1167,17 @@ async fn serve_file(
 
 /// How a library file reaches the browser. AIFF and ALAC are not decoded
 /// by Chrome or Firefox; they are converted losslessly to FLAC instead.
-fn local_delivery(path: &Path, codec: Codec) -> LocalDelivery {
+/// Apple's engine decodes both itself, and plays a file with byte ranges
+/// better than a stream of unknown length.
+fn local_delivery(path: &Path, codec: Codec, engine: MediaEngine) -> LocalDelivery {
     let mime = path
         .file_name()
         .map(|n| audio_mime(&n.to_string_lossy()))
         .unwrap_or("application/octet-stream");
     match (codec, mime) {
+        (Codec::Alac, "audio/mp4") | (Codec::Pcm, "audio/aiff") if engine == MediaEngine::Apple => {
+            LocalDelivery::AsIs { mime }
+        }
         (Codec::Alac | Codec::Other, _) | (_, "audio/aiff" | "application/octet-stream") => {
             LocalDelivery::Flac
         }
@@ -1168,25 +1247,41 @@ mod tests {
     fn library_files_browsers_cannot_decode_become_flac() {
         let p = |name: &str| PathBuf::from(format!("/music/{name}"));
         assert_eq!(
-            local_delivery(&p("a.opus"), Codec::Opus),
+            local_delivery(&p("a.opus"), Codec::Opus, MediaEngine::Standard),
             LocalDelivery::AsIs { mime: "audio/ogg" }
         );
         assert_eq!(
-            local_delivery(&p("a.m4a"), Codec::Aac),
+            local_delivery(&p("a.m4a"), Codec::Aac, MediaEngine::Standard),
             LocalDelivery::AsIs { mime: "audio/mp4" }
         );
         assert_eq!(
-            local_delivery(&p("a.m4a"), Codec::Alac),
+            local_delivery(&p("a.m4a"), Codec::Alac, MediaEngine::Standard),
             LocalDelivery::Flac
         );
         assert_eq!(
-            local_delivery(&p("a.aiff"), Codec::Pcm),
+            local_delivery(&p("a.aiff"), Codec::Pcm, MediaEngine::Standard),
             LocalDelivery::Flac
         );
         assert_eq!(
-            local_delivery(&p("a.wav"), Codec::Pcm),
+            local_delivery(&p("a.wav"), Codec::Pcm, MediaEngine::Standard),
             LocalDelivery::AsIs { mime: "audio/wav" }
         );
+    }
+
+    #[test]
+    fn apple_engine_plays_aiff_and_alac_as_they_are() {
+        let p = |name: &str| PathBuf::from(format!("/music/{name}"));
+        let apple = |name: &str, codec| local_delivery(&p(name), codec, MediaEngine::Apple);
+        assert_eq!(
+            apple("a.aiff", Codec::Pcm),
+            LocalDelivery::AsIs { mime: "audio/aiff" }
+        );
+        assert_eq!(
+            apple("a.m4a", Codec::Alac),
+            LocalDelivery::AsIs { mime: "audio/mp4" }
+        );
+        assert_eq!(apple("a.bin", Codec::Pcm), LocalDelivery::Flac);
+        assert_eq!(apple("a.m4a", Codec::Other), LocalDelivery::Flac);
     }
 
     #[test]
@@ -1197,6 +1292,65 @@ mod tests {
         assert_eq!(container_mime(Some("webm")), "audio/webm");
         assert_eq!(container_mime(Some("M4A")), "audio/mp4");
         assert_eq!(container_mime(Some("mp3")), "audio/mpeg");
+    }
+
+    #[tokio::test]
+    async fn captured_streams_answer_ranges_with_their_length() {
+        let capture = Capture::new();
+        let audio = capture::tests::frames(20);
+        let total = audio.len() as u64;
+        capture.append(&audio).unwrap();
+        let sc = ProviderKind::SoundCloud;
+
+        // Without a range the audio starts at once, length unknown yet.
+        let response = capture_response(sc, &capture, 0, None).await.unwrap();
+        assert_eq!(response.content_length, None);
+        assert!(response.content_range.is_none());
+
+        // A range waits for the capture to complete.
+        let ranged = {
+            let capture = Arc::clone(&capture);
+            tokio::spawn(async move {
+                capture_response(sc, &capture, 0, Some(ByteRange::FromTo(0, 1))).await
+            })
+        };
+        capture.finish();
+        let response = ranged.await.unwrap().unwrap();
+        assert_eq!(response.content_length, Some(2));
+        assert_eq!(response.content_range, Some(format!("bytes 0-1/{total}")));
+        assert!(response.ranges);
+        let StreamBody::Capture(mut body) = response.body else {
+            panic!("expected a capture body");
+        };
+        let mut bytes = Vec::new();
+        body.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, audio[..2]);
+
+        // A resource starting at a seek point is ranged on its own.
+        let offset = 100;
+        let response = capture_response(sc, &capture, offset, Some(ByteRange::From(5)))
+            .await
+            .unwrap();
+        let rest = total - offset;
+        assert_eq!(response.content_length, Some(rest - 5));
+        assert_eq!(
+            response.content_range,
+            Some(format!("bytes 5-{}/{rest}", rest - 1))
+        );
+        let StreamBody::Capture(mut body) = response.body else {
+            panic!("expected a capture body");
+        };
+        let mut bytes = Vec::new();
+        body.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, audio[offset as usize + 5..]);
+
+        // Complete: the length is sent without a range too.
+        let response = capture_response(sc, &capture, 0, None).await.unwrap();
+        assert_eq!(response.content_length, Some(total));
+        assert!(matches!(
+            capture_response(sc, &capture, 0, Some(ByteRange::From(total))).await,
+            Err(PlaybackError::RangeNotSatisfiable { total: t }) if t == total
+        ));
     }
 
     #[tokio::test]
@@ -1211,6 +1365,7 @@ mod tests {
                 path.clone(),
                 &quality(Codec::Mp3, "mp3"),
                 UserId(1),
+                MediaEngine::Standard,
             )
             .await
             .unwrap();
@@ -1304,6 +1459,7 @@ mod tests {
                 path.clone(),
                 &quality(Codec::Pcm, "wav"),
                 UserId(1),
+                MediaEngine::Standard,
             )
             .await
             .unwrap();
@@ -1351,6 +1507,7 @@ mod tests {
                     PathBuf::from(format!("/nope/{i}.mp3")),
                     &q,
                     UserId(1),
+                    MediaEngine::Standard,
                 )
                 .await
                 .unwrap();

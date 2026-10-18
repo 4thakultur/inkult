@@ -216,6 +216,32 @@ impl Capture {
         }
     }
 
+    /// Length in bytes once the download is complete, waiting up to
+    /// `timeout` for it. `Ok(None)`: still downloading after `timeout`.
+    pub async fn complete_len(&self, timeout: Duration) -> Result<Option<u64>, CaptureError> {
+        let mut changed = self.changed.subscribe();
+        let wait = async {
+            loop {
+                changed.borrow_and_update();
+                {
+                    let inner = self.lock();
+                    match &inner.state {
+                        State::Running => {}
+                        State::Done => return Ok(inner.bytes.len() as u64),
+                        State::Failed(e) => return Err(e.clone()),
+                    }
+                }
+                if changed.changed().await.is_err() {
+                    return Err(CaptureError::Failed("capture abandoned".into()));
+                }
+            }
+        };
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Byte offset of the frame playing at `secs`, waiting up to `timeout`
     /// for the download to reach it. `Ok(None)`: the track is shorter.
     pub async fn offset_at(
@@ -316,7 +342,7 @@ impl AsyncRead for CaptureReader {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
 
@@ -333,7 +359,8 @@ mod tests {
         f
     }
 
-    fn frames(count: usize) -> Vec<u8> {
+    /// `count` ADTS frames of 1024 samples at 44.1 kHz.
+    pub(in crate::playback) fn frames(count: usize) -> Vec<u8> {
         (0..count)
             .flat_map(|i| frame(100 + i % 7, i as u8))
             .collect()
@@ -411,6 +438,32 @@ mod tests {
         assert_eq!(
             capture.offset_at(late * 2.0, Duration::from_secs(1)).await,
             Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn length_is_known_once_the_download_completes() {
+        let capture = Capture::new();
+        let audio = frames(10);
+        capture.append(&audio).unwrap();
+        assert_eq!(
+            capture.complete_len(Duration::from_millis(10)).await,
+            Ok(None)
+        );
+
+        let waiting = {
+            let capture = Arc::clone(&capture);
+            tokio::spawn(async move { capture.complete_len(Duration::from_secs(5)).await })
+        };
+        capture.append(&[0xFF]).unwrap(); // a partial frame, dropped at the end
+        capture.finish();
+        assert_eq!(waiting.await.unwrap(), Ok(Some(audio.len() as u64)));
+
+        let failed = Capture::new();
+        failed.fail(CaptureError::TooLarge);
+        assert_eq!(
+            failed.complete_len(Duration::from_secs(1)).await,
+            Err(CaptureError::TooLarge)
         );
     }
 

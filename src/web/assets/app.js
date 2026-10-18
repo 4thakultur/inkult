@@ -15,6 +15,10 @@ const STATE_LABELS = {
 };
 const TERMINAL = new Set(["completed", "skipped", "failed", "cancelled"]);
 const PROVIDER_NAMES = { youtube: "YouTube", soundcloud: "SoundCloud", soulseek: "Soulseek" };
+// Safari and every iOS/iPadOS browser (all WebKit) play audio through
+// Apple's AVFoundation, which starts WebM slowly and wants sized, ranged
+// streams. The server picks renditions for it accordingly.
+const MEDIA_ENGINE = navigator.vendor === "Apple Computer, Inc." ? "apple" : "standard";
 // Output formats offered when downloading. Only MP3 and AIFF re-encode;
 // the descriptions say so plainly because re-encoding never adds quality.
 const OUTPUTS = [
@@ -2428,7 +2432,8 @@ const player = {
   loadToken: 0,
   /** Track position (s) the user is dragging the waveform to, or null. */
   scrub: null,
-  retried: false,
+  /** Track position (s) a failed stream was resumed from, or null. */
+  retried: null,
   wave: {
     /** Loudness bars (0–255) measured from the playing track, or null. */
     bars: null,
@@ -2559,11 +2564,21 @@ function position() {
   return player.current.offset + (player.audio.currentTime || 0);
 }
 
+function streamRequest(item) {
+  return { ...item.request, engine: MEDIA_ENGINE };
+}
+
 function trackDuration() {
   const cur = player.current;
   if (!cur) return null;
-  if (cur.prepared.seekable && isFinite(player.audio.duration)) return player.audio.duration;
-  return cur.prepared.duration_secs || cur.item.duration || null;
+  const known = cur.prepared.duration_secs || cur.item.duration || null;
+  const reported = player.audio.duration;
+  // The browser's figure is exact for the file it plays, when it reads it
+  // from the container; some estimate it from the bitrate and are far off.
+  // The length the server knows wins when the two disagree.
+  const agrees = !known || Math.abs(reported - known) <= Math.max(2, known * 0.02);
+  if (cur.prepared.seekable && isFinite(reported) && agrees) return reported;
+  return known;
 }
 
 function showNowPlaying(item, sourceText) {
@@ -2596,11 +2611,11 @@ async function playItem(item) {
   showNowPlaying(item, "Preparing stream…");
   syncPlayButtons();
   try {
-    const prepared = await api("/api/stream", { method: "POST", body: item.request });
+    const prepared = await api("/api/stream", { method: "POST", body: streamRequest(item) });
     if (token !== player.loadToken) return;
     player.current = { item, prepared, offset: 0 };
     player.loading = null;
-    player.retried = false;
+    player.retried = null;
     loadWaveform(prepared);
     showNowPlaying(item, describeSource(prepared));
     setMediaSession(item);
@@ -2995,7 +3010,7 @@ async function streamFailureReason(url) {
 /** A stream failed mid-way (e.g. it expired): prepare it again once and resume. */
 async function recoverStream() {
   const cur = player.current;
-  if (!cur || player.retried || player.loading) {
+  if (!cur || player.retried !== null || player.loading) {
     const failedUrl = player.audio.getAttribute("src");
     syncPlayButtons();
     if (!cur) {
@@ -3006,10 +3021,10 @@ async function recoverStream() {
     toast(`Playback of “${cur.item.title}” failed${reason ? `: ${reason}` : ""}`, true);
     return;
   }
-  player.retried = true;
   const at = position();
+  player.retried = at;
   try {
-    const prepared = await api("/api/stream", { method: "POST", body: cur.item.request });
+    const prepared = await api("/api/stream", { method: "POST", body: streamRequest(cur.item) });
     if (player.current !== cur) return;
     cur.prepared = prepared;
     cur.offset = prepared.seekable ? 0 : at;
@@ -3032,7 +3047,12 @@ function setupPlayer() {
 
   for (const event of ["play", "pause", "playing", "ended"]) audio.addEventListener(event, syncPlayButtons);
   for (const event of ["timeupdate", "durationchange", "loadedmetadata"]) audio.addEventListener(event, updateTime);
-  audio.addEventListener("playing", () => { player.retried = false; });
+  // A resumed stream may fail again: retry once more only after it has
+  // played well for a while, not as soon as it starts (that loops forever
+  // on a stream that fails right after starting).
+  audio.addEventListener("timeupdate", () => {
+    if (player.retried !== null && position() >= player.retried + 10) player.retried = null;
+  });
   audio.addEventListener("ended", () => {
     if (!player.current) return;
     player.current.offset = 0;

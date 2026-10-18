@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::{
-    DownloadedMedia, ProviderError, StreamSource, StreamTransport, SummaryYear, TrackSummary,
-    YearBasis,
+    DownloadedMedia, MediaEngine, ProviderError, StreamSource, StreamTransport, SummaryYear,
+    TrackSummary, YearBasis,
 };
 use crate::domain::DownloadProgress;
 use crate::domain::metadata::{MetadataField, ReleaseDate, TrackMetadata};
@@ -378,8 +378,15 @@ fn stream_candidate<'a>(
 ///
 /// Progressive files win over HLS because the browser can seek in them
 /// natively and they need no processing. Within a transport the ordering is
-/// the same as for downloads (no DRC, best codec-weighted bitrate).
-pub fn pick_stream(provider: ProviderKind, info: &YtInfo) -> Result<StreamSource, ProviderError> {
+/// the same as for downloads (no DRC, best codec-weighted bitrate). Apple's
+/// engine gets WebM and Ogg only when nothing else is offered (see
+/// [`MediaEngine`]): a YouTube preview then plays the AAC rendition, which
+/// it starts at once, instead of the slightly higher-bitrate Opus one.
+pub fn pick_stream(
+    provider: ProviderKind,
+    info: &YtInfo,
+    engine: MediaEngine,
+) -> Result<StreamSource, ProviderError> {
     let candidates: Vec<StreamCandidate<'_>> = match &info.formats {
         Some(formats) if !formats.is_empty() => formats
             .iter()
@@ -389,17 +396,23 @@ pub fn pick_stream(provider: ProviderKind, info: &YtInfo) -> Result<StreamSource
             .into_iter()
             .collect(),
     };
-    let best_of = |transport: StreamTransport| {
+    let suits_engine = |c: &StreamCandidate<'_>| {
+        engine != MediaEngine::Apple
+            || !matches!(c.format.container.as_deref(), Some("webm" | "ogg" | "opus"))
+    };
+    let best_of = |transport: StreamTransport, suited_only: bool| {
         let pool: Vec<&StreamCandidate<'_>> = candidates
             .iter()
-            .filter(|c| c.transport == transport)
+            .filter(|c| c.transport == transport && (!suited_only || suits_engine(c)))
             .collect();
         let formats: Vec<AudioFormat> = pool.iter().map(|c| c.format.clone()).collect();
         let best = select_best(&formats)?;
         pool.into_iter().find(|c| c.format.id == best.id)
     };
-    let chosen = best_of(StreamTransport::Progressive)
-        .or_else(|| best_of(StreamTransport::Hls))
+    let chosen = best_of(StreamTransport::Progressive, true)
+        .or_else(|| best_of(StreamTransport::Hls, true))
+        .or_else(|| best_of(StreamTransport::Progressive, false))
+        .or_else(|| best_of(StreamTransport::Hls, false))
         .ok_or_else(|| ProviderError::Unavailable {
             provider,
             reason: "no stream format a browser can play is offered for this track".into(),
@@ -555,12 +568,43 @@ mod tests {
                 {"format_id":"plain","protocol":"http","acodec":"mp3","vcodec":"none","abr":999,"ext":"mp3","url":"http://cdn/insecure"}
             ]}"#,
         );
-        let s = pick_stream(ProviderKind::YouTube, &i).unwrap();
+        let s = pick_stream(ProviderKind::YouTube, &i, MediaEngine::Standard).unwrap();
         assert_eq!(s.format.id, "251");
         assert_eq!(s.transport, StreamTransport::Progressive);
         assert_eq!(s.media_url.as_str(), "https://cdn/251");
         assert_eq!(s.headers, vec![("User-Agent".to_owned(), "UA".to_owned())]);
         assert_eq!(s.duration_secs, Some(213.5));
+    }
+
+    #[test]
+    fn apple_engine_gets_webm_only_as_a_last_resort() {
+        let i = info(
+            r#"{"id":"x","formats":[
+                {"format_id":"251","protocol":"https","acodec":"opus","vcodec":"none","abr":160,"ext":"webm","url":"https://cdn/251"},
+                {"format_id":"140","protocol":"https","acodec":"mp4a.40.2","vcodec":"none","abr":129,"ext":"m4a","url":"https://cdn/140"}
+            ]}"#,
+        );
+        let s = pick_stream(ProviderKind::YouTube, &i, MediaEngine::Apple).unwrap();
+        assert_eq!(s.format.id, "140");
+        let s = pick_stream(ProviderKind::YouTube, &i, MediaEngine::Standard).unwrap();
+        assert_eq!(s.format.id, "251");
+
+        // HLS AAC beats a progressive Opus file on Apple.
+        let i = info(
+            r#"{"id":"x","formats":[
+                {"format_id":"http_opus","protocol":"https","acodec":"opus","vcodec":"none","abr":64,"ext":"opus","url":"https://cdn/o"},
+                {"format_id":"hls_aac_160k","protocol":"m3u8_native","acodec":"mp4a.40.2","vcodec":"none","abr":160,"ext":"m4a","url":"https://cdn/160.m3u8"}
+            ]}"#,
+        );
+        let s = pick_stream(ProviderKind::SoundCloud, &i, MediaEngine::Apple).unwrap();
+        assert_eq!(s.format.id, "hls_aac_160k");
+
+        // Nothing else offered: WebM still plays, slowly.
+        let i = info(
+            r#"{"id":"x","formats":[{"format_id":"251","protocol":"https","acodec":"opus","vcodec":"none","abr":160,"ext":"webm","url":"https://cdn/251"}]}"#,
+        );
+        let s = pick_stream(ProviderKind::YouTube, &i, MediaEngine::Apple).unwrap();
+        assert_eq!(s.format.id, "251");
     }
 
     #[test]
@@ -572,7 +616,7 @@ mod tests {
                 {"format_id":"dash","protocol":"http_dash_segments","acodec":"opus","vcodec":"none","abr":300,"ext":"webm","url":"https://cdn/dash"}
             ]}"#,
         );
-        let s = pick_stream(ProviderKind::SoundCloud, &i).unwrap();
+        let s = pick_stream(ProviderKind::SoundCloud, &i, MediaEngine::Standard).unwrap();
         assert_eq!(s.format.id, "hls_aac_160k");
         assert_eq!(s.transport, StreamTransport::Hls);
 
@@ -580,7 +624,7 @@ mod tests {
             r#"{"id":"x","formats":[{"format_id":"a","protocol":"https","acodec":"alac","vcodec":"none","ext":"m4a","url":"https://cdn/a"}]}"#,
         );
         assert!(matches!(
-            pick_stream(ProviderKind::SoundCloud, &none),
+            pick_stream(ProviderKind::SoundCloud, &none, MediaEngine::Standard),
             Err(ProviderError::Unavailable { .. })
         ));
     }
@@ -590,7 +634,7 @@ mod tests {
         let i = info(
             r#"{"id":"1","format_id":"download","protocol":"https","acodec":"mp3","vcodec":"none","ext":"mp3","url":"https://cdn/file.mp3"}"#,
         );
-        let s = pick_stream(ProviderKind::SoundCloud, &i).unwrap();
+        let s = pick_stream(ProviderKind::SoundCloud, &i, MediaEngine::Standard).unwrap();
         assert_eq!(s.media_url.as_str(), "https://cdn/file.mp3");
     }
 

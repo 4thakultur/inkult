@@ -21,8 +21,9 @@ use super::common::{
 };
 use super::youtube_music::{VideoAbout, YouTubeWebClient, is_channel_id};
 use super::{
-    ArtistLink, ArtistPage, Collection, DownloadedMedia, MusicProvider, ProviderError, Resolved,
-    SearchDetail, StreamSource, SummaryYear, TrackDetails, TrackSummary, UrlKind, YearBasis,
+    ArtistLink, ArtistPage, Collection, DownloadedMedia, MediaEngine, MusicProvider, ProviderError,
+    Resolved, SearchDetail, StreamSource, SummaryYear, TrackDetails, TrackSummary, UrlKind,
+    YearBasis,
 };
 use crate::domain::DownloadProgress;
 use crate::domain::metadata::{MetadataField, ReleaseDate, TrackMetadata};
@@ -606,7 +607,11 @@ impl MusicProvider for YouTubeProvider {
         })
     }
 
-    async fn stream_source(&self, url: &Url) -> Result<StreamSource, ProviderError> {
+    async fn stream_source(
+        &self,
+        url: &Url,
+        engine: MediaEngine,
+    ) -> Result<StreamSource, ProviderError> {
         let Some(YouTubeUrl::Video(id)) = YouTubeUrl::parse(url) else {
             return Err(ProviderError::UnsupportedUrl);
         };
@@ -615,7 +620,7 @@ impl MusicProvider for YouTubeProvider {
             .info(&video_url(&id))
             .await
             .map_err(|e| classify_error(KIND, e))?;
-        pick_stream(KIND, &info)
+        pick_stream(KIND, &info, engine)
     }
 
     async fn download(

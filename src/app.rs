@@ -30,8 +30,8 @@ use crate::playback::range::ByteRange;
 use crate::playback::waveform::Waveform;
 use crate::playback::{Playback, PlaybackError, PreparedStream, StreamId, StreamResponse};
 use crate::providers::{
-    ArtistPage, ProviderError, ProviderRegistry, Resolved, SearchDetail, TrackSummary, UrlKind,
-    is_provider_image_url, parse_user_url,
+    ArtistPage, MediaEngine, ProviderError, ProviderRegistry, Resolved, SearchDetail, TrackSummary,
+    UrlKind, is_provider_image_url, parse_user_url,
 };
 use crate::rooms::{MessageView, RoomError, RoomId, RoomView, Rooms, SharedTrack, TrackStatus};
 use crate::search::{FilterSummary, RawFilters, SearchFilters};
@@ -118,10 +118,20 @@ pub struct EnqueueRequest {
     pub output: OutputFormat,
 }
 
+/// What to listen to, and in which kind of browser.
+#[derive(Debug, Deserialize)]
+pub struct StreamRequest {
+    #[serde(flatten)]
+    pub target: StreamTarget,
+    /// Older UIs do not send it.
+    #[serde(default)]
+    pub engine: MediaEngine,
+}
+
 /// What to listen to.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
-pub enum StreamRequest {
+pub enum StreamTarget {
     /// A track at a provider, e.g. a search result; nothing is downloaded.
     Provider { url: String },
     /// A file in the library, identified like a file download.
@@ -1383,8 +1393,9 @@ impl App {
         actor: &User,
         request: StreamRequest,
     ) -> Result<PreparedStream, AppError> {
-        match request {
-            StreamRequest::Provider { url } => {
+        let engine = request.engine;
+        match request.target {
+            StreamTarget::Provider { url } => {
                 let url = parse_user_url(&url)?;
                 let (provider, kind) = self
                     .registry
@@ -1398,9 +1409,9 @@ impl App {
                 }
                 // ffmpeg is only needed for some streams and reported when used.
                 self.require_tools(&["yt-dlp"]).await?;
-                Ok(self.playback.prepare_remote(provider, url).await?)
+                Ok(self.playback.prepare_remote(provider, url, engine).await?)
             }
-            StreamRequest::Library {
+            StreamTarget::Library {
                 provider,
                 id,
                 output,
@@ -1408,14 +1419,14 @@ impl App {
                 let (entry, path) = self.library_entry(actor, &provider, &id, &output).await?;
                 Ok(self
                     .playback
-                    .prepare_local(entry.key.provider, path, &entry.quality, actor.id)
+                    .prepare_local(entry.key.provider, path, &entry.quality, actor.id, engine)
                     .await?)
             }
-            StreamRequest::Shared { room, seq } => {
+            StreamTarget::Shared { room, seq } => {
                 let (entry, path) = self.shared_entry(actor, RoomId(room), seq).await?;
                 Ok(self
                     .playback
-                    .prepare_local(entry.key.provider, path, &entry.quality, actor.id)
+                    .prepare_local(entry.key.provider, path, &entry.quality, actor.id, engine)
                     .await?)
             }
         }
