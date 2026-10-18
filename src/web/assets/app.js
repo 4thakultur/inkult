@@ -33,12 +33,13 @@ const LIBRARY_SORT_KEY = "inkult.librarySort";
 // the saved one before first paint and must list the same ids.
 const THEMES = {
   pipeboy: { color: "#020a03", detail: "Green phosphor on a green-tinted black. The original look." },
-  amoled: { color: "#000000", detail: "Pure black background for OLED screens. Same phosphor text, no tint." },
-  "amoled-white": { color: "#000000", detail: "Pure black background, monochrome white phosphor." },
-  "amoled-blue": { color: "#000000", detail: "Pure black background, cyan-blue phosphor." },
-  "amoled-purple": { color: "#000000", detail: "Pure black background, violet phosphor." },
-  "amoled-orange": { color: "#000000", detail: "Pure black background, amber phosphor like an old amber monitor. Errors turn crimson." },
-  "amoled-red": { color: "#000000", detail: "Pure black background, red phosphor. Errors turn hazard yellow, warnings amber." },
+  green: { color: "#000000", detail: "Pure black background for OLED screens. Same phosphor text, no tint." },
+  white: { color: "#000000", detail: "Pure black background, monochrome white phosphor." },
+  blue: { color: "#000000", detail: "Pure black background, cyan-blue phosphor." },
+  purple: { color: "#000000", detail: "Pure black background, violet phosphor." },
+  orange: { color: "#000000", detail: "Pure black background, amber phosphor like an old amber monitor. Errors turn crimson." },
+  red: { color: "#000000", detail: "Pure black background, red phosphor. Errors turn hazard yellow, warnings amber." },
+  win95: { color: "#008080", detail: "Grey bevelled windows on a teal desktop, as in Windows 95. Covers keep their real colours; no starfield." },
 };
 const DEFAULT_THEME = "pipeboy";
 const THEME_KEY = "inkult.theme";
@@ -137,7 +138,8 @@ function h(tag, attrs, ...children) {
 }
 
 function icon(name) {
-  return h("span", { "aria-hidden": "true" }, GLYPHS[name]);
+  // data-glyph lets a theme draw a picture for it (Windows 95).
+  return h("span", { "aria-hidden": "true", "data-glyph": name }, GLYPHS[name]);
 }
 
 function art(url, cls = "art") {
@@ -380,6 +382,153 @@ function applyTheme(theme) {
   try { localStorage.setItem(THEME_KEY, theme); } catch { /* storage unavailable */ }
 }
 
+// ----- Windows 95 labels -----
+// The terminal themes write controls as bracketed capitals ("[ RUN ]",
+// "SEARCH>"). Windows 95 draws the button itself and labels it in title or
+// sentence case ("Run", "Search:"), so while that theme is on, the label
+// text of controls is rewritten, and put back when it is switched off.
+// Labels are set from all over app.js (and change, "[ DIALING... ]"), so a
+// MutationObserver catches them rather than every call site knowing about
+// themes. Only text nodes directly inside these elements are touched, and
+// only words written entirely in capitals, outside quotes: names and titles
+// from providers or users keep their spelling (and elements holding only a
+// name are marked data-verbatim or .keep-case).
+const W95_THEMES = new Set(["win95"]);
+// Commands, captions and tabs: title case ("Clear Finished").
+const W95_TITLE_CASE = ".btn, .icon-btn, .icon-btn > span, .nav-item, .box-title, .appbar-title, .menu-title, "
+  + ".slsk-tabs > .chip, .list-head > span";
+// Options and field labels: sentence case ("Stay signed in", "Handle:").
+const W95_SENTENCE_CASE = ".chip, .prompt, .check > span, .setting-label, .admin-heading, .irc-heading, "
+  + ".irc-heading > span, .section-title, .np-label, .menu-label, .chips > .dim, .sysvars > dt, "
+  + "#user-rank, .statline > span, .filter-grid > label, .rank, .crew-tracks, .crew-slsk-label, .crew-slsk-outcome, "
+  + ".bulk-count, .sort-dir, .added-cell, .state, .format-pill, .slsk-conn, .irc-owner";
+// Messages written in capitals: sentence case, but a paragraph that already
+// has lower case anywhere is left as written (it is mixed-case prose, where
+// capitals are names: "YT Music", "AAC").
+const W95_PROSE = ".empty-title, .empty > p, .irc-empty > p, .gate-intro, .motto, p.setting-note, .list-foot, "
+  + ".crew-form > p";
+const W95_LABELLED = `${W95_TITLE_CASE}, ${W95_SENTENCE_CASE}, ${W95_PROSE}`;
+const W95_WORDS = {
+  YOUTUBE: "YouTube", SOUNDCLOUD: "SoundCloud", SOULSEEK: "Soulseek", INKULT: "Inkult", KULT: "Kult",
+  OK: "OK", PW: "PW", TXT: "TXT", DJ: "DJ", IRC: "IRC", YT: "YT", AAC: "AAC", AIFF: "AIFF", FLAC: "FLAC",
+  WAV: "WAV", M4A: "M4A", MP3: "MP3", OLED: "OLED", AI: "AI",
+};
+// Names made of more than one word.
+const W95_PHRASES = [
+  [/\bYT MUSIC\b/g, "YT Music"], [/\bYOUTUBE MUSIC\b/g, "YouTube Music"], [/\bYOUTUBE-MUSIC\b/g, "YouTube-Music"],
+];
+const W95_MINOR = new Set(["A", "AN", "THE", "AND", "OR", "TO", "OF", "IN", "ON", "FOR", "AT", "BY", "WITH", "AS"]);
+/** Text node → { original, shown }: what to put back, and what we wrote. */
+const w95Labels = new WeakMap();
+
+function w95Active() {
+  return W95_THEMES.has(currentTheme());
+}
+
+function w95Word(word, first, title) {
+  if (/[a-z]/.test(word)) return word;
+  if (Object.hasOwn(W95_WORDS, word)) return W95_WORDS[word];
+  if (/\d/.test(word)) return word;
+  const lower = word.toLowerCase();
+  if (first || (title && !W95_MINOR.has(word))) return lower[0].toUpperCase() + lower.slice(1);
+  return lower;
+}
+
+/** Re-cases the capitals of `text`; a word after . ! or ? starts a sentence.
+ *  `at` carries whether the next word starts one from text node to node. */
+function w95Case(text, title, at) {
+  let first = at.first;
+  const out = text.split(/(“[^”]*”|"[^"]*")/).map((part, i) => {
+    if (i % 2) {
+      first = false;
+      return part;
+    }
+    for (const [pattern, name] of W95_PHRASES) part = part.replace(pattern, `\u0000${name}\u0000`);
+    return part.replace(/\u0000([^\u0000]*)\u0000|([A-Za-z0-9][A-Za-z0-9']*)|([.!?])/g, (match, name, word, stop) => {
+      if (stop) {
+        first = true;
+        return stop;
+      }
+      const out = name ?? w95Word(word, first, title);
+      first = false;
+      return out;
+    });
+  }).join("");
+  at.first = first;
+  return out;
+}
+
+function w95Text(text, el, at = { first: true }) {
+  let out = text
+    .replace(/^(\s*)\[\s*([^[\]]*?[^\s[\]][^[\]]*?)\s*\](\s*)$/, "$1$2$3")
+    .replace(/^(\s*)\*{3}\s*/, "$1").replace(/\s*\*{3}(\s*)$/, "$1")
+    .replace(/^(\s*)>>\s*/, "$1");
+  // "SEARCH>" prompts end in a colon, as field labels do.
+  if (el.matches(".prompt")) out = out.replace(/>(\s*)$/, ":$1");
+  // A [+] / [-] panel toggle becomes Windows' "Options >>" / "Options <<".
+  if (el.matches(".btn")) {
+    out = out.replace(/^(\s*)\[([+-])\]\s*(.*?)(\s*)$/, (_, lead, sign, label, tail) =>
+      `${lead}${label} ${sign === "+" ? ">>" : "<<"}${tail}`);
+  }
+  const prose = el.matches(W95_PROSE) && !el.matches(`${W95_TITLE_CASE}, ${W95_SENTENCE_CASE}`);
+  if (prose && /[a-z]{2}/.test(out.replace(/“[^”]*”|"[^"]*"/g, ""))) return out;
+  return w95Case(out, el.matches(W95_TITLE_CASE), at);
+}
+
+function w95Skin(el) {
+  // Names (a track title heading a menu) keep their spelling.
+  if (el.closest(".keep-case, [data-verbatim]")) return;
+  // "MUSIC WANTS<br>TO BE FREE." is one sentence over two text nodes.
+  const at = { first: true };
+  for (const node of el.childNodes) {
+    if (node.nodeType !== Node.TEXT_NODE) continue;
+    const known = w95Labels.get(node);
+    if (known && known.shown === node.data) {
+      if (/[A-Za-z0-9]/.test(node.data)) at.first = /[.!?]\s*$/.test(node.data);
+      continue;
+    }
+    const shown = w95Text(node.data, el, at);
+    w95Labels.set(node, { original: node.data, shown });
+    if (shown !== node.data) node.data = shown;
+  }
+}
+
+function w95Unskin(el) {
+  for (const node of el.childNodes) {
+    const known = node.nodeType === Node.TEXT_NODE && w95Labels.get(node);
+    if (!known) continue;
+    if (known.shown === node.data) node.data = known.original;
+    w95Labels.delete(node);
+  }
+}
+
+function syncThemeLabels(root = document.body) {
+  const apply = w95Active() ? w95Skin : w95Unskin;
+  if (root instanceof Element && root.matches(W95_LABELLED)) apply(root);
+  for (const el of root.querySelectorAll(W95_LABELLED)) apply(el);
+}
+
+function setupThemeLabels() {
+  new MutationObserver((records) => {
+    if (!w95Active()) return;
+    for (const record of records) {
+      const target = record.target;
+      if (record.type === "characterData") {
+        const el = target.parentElement;
+        if (el?.matches(W95_LABELLED)) w95Skin(el);
+        continue;
+      }
+      if (target instanceof Element && target.matches(W95_LABELLED)) w95Skin(target);
+      for (const node of record.addedNodes) {
+        if (node instanceof Element) syncThemeLabels(node);
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  new MutationObserver(() => syncThemeLabels())
+    .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  syncThemeLabels();
+}
+
 function starsEnabled() {
   return document.documentElement.dataset.stars !== "off";
 }
@@ -589,11 +738,14 @@ function repeatPaging() {
 
 function setupScrollbars() {
   const fine = matchMedia(FINE_POINTER);
+  // Windows 95 has real scrollbars with arrow buttons, which app.css draws
+  // on the native ones, so the drawn bars stay off there.
   const sync = () => {
-    document.documentElement.toggleAttribute("data-scrollbars", fine.matches);
+    document.documentElement.toggleAttribute("data-scrollbars", fine.matches && !w95Active());
     scheduleScrollbars();
   };
   fine.addEventListener("change", sync);
+  new MutationObserver(sync).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
   document.addEventListener("pointerdown", (event) => {
     if (event.pointerType === "touch" || event.button !== 0) return;
@@ -748,7 +900,7 @@ const PHONE = window.matchMedia("(max-width: 640px)");
  * `extras`: actions listed after the formats of the download menu (never
  * remembered as the preferred format).
  */
-function openFormatMenu(anchor, onPick, { title = "SELECT FORMAT:", choices = null, extras = [] } = {}) {
+function openFormatMenu(anchor, onPick, { title = "SELECT FORMAT:", titleIsName = false, choices = null, extras = [] } = {}) {
   const wasOpenHere = openMenu && openMenu.anchor === anchor;
   closeFormatMenu();
   if (wasOpenHere) return;
@@ -762,6 +914,8 @@ function openFormatMenu(anchor, onPick, { title = "SELECT FORMAT:", choices = nu
     "aria-disabled": output.disabled ? "true" : null,
     class: ["menu-item", isFormat(output) && output.id === preferred && "selected",
       output.disabled && "disabled", extras.includes(output) && "menu-extra"].filter(Boolean).join(" "),
+    // Picture for themes that show one: the choice's own, else its id.
+    "data-icon": output.icon || output.id,
     onclick: () => {
       if (output.disabled) return;
       closeFormatMenu();
@@ -775,7 +929,7 @@ function openFormatMenu(anchor, onPick, { title = "SELECT FORMAT:", choices = nu
   // the arrow keys.
   const items = buttons.filter((_, i) => !options[i].disabled);
   const menu = h("div", { class: choices ? "format-menu plain" : "format-menu", role: "menu", "aria-label": title },
-    h("div", { class: "menu-title" }, title), buttons);
+    h("div", { class: "menu-title", "data-verbatim": titleIsName || null }, title), buttons);
   document.body.append(menu);
 
   if (PHONE.matches) {
@@ -1305,13 +1459,23 @@ function progressBar(job) {
   const BAR_WIDTH = NARROW.matches ? 16 : 30;
   if (job.state === "downloading" && typeof job.progress_fraction === "number") {
     const fraction = Math.min(1, Math.max(0, job.progress_fraction));
-    const filled = Math.round(fraction * BAR_WIDTH);
-    const percent = Math.round(fraction * 100);
-    return h("div", { class: "progress", role: "progressbar",
-      "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(percent) },
-    `[${"#".repeat(filled)}${".".repeat(BAR_WIDTH - filled)}] ${String(percent).padStart(3)}%`);
+    return progressMeter(fraction, BAR_WIDTH);
   }
-  return h("div", { class: "progress indeterminate" }, `[${"=".repeat(BAR_WIDTH)}] ${STATE_LABELS[job.state] || job.state}`);
+  return h("div", { class: "progress indeterminate" },
+    h("span", { class: "progress-bar" }, `[${"=".repeat(BAR_WIDTH)}]`), ` ${STATE_LABELS[job.state] || job.state}`);
+}
+
+/** An ASCII bar and percentage; the bar is its own span, with the fraction
+ *  in --fraction, so a theme can draw a real bar in its place. */
+function progressMeter(fraction, width) {
+  const filled = Math.round(fraction * width);
+  const percent = Math.round(fraction * 100);
+  const meter = h("div", { class: "progress", role: "progressbar",
+    "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(percent) },
+  h("span", { class: "progress-bar" }, `[${"#".repeat(filled)}${".".repeat(width - filled)}]`),
+  ` ${String(percent).padStart(3)}%`);
+  setStyleVar(meter, "--fraction", String(fraction));
+  return meter;
 }
 
 function fact(label, value) {
@@ -1755,6 +1919,7 @@ function rowActions(entry, versions) {
     const actions = { share, convert, save, remove };
     openFormatMenu(more, (id) => actions[id].click(), {
       title: entry.title,
+      titleIsName: true,
       choices: [
         { id: "share", label: "Send to a chat room", detail: "Share it with a room you are in" },
         { id: "convert", label: convert.title.replace(/…$/, ""), detail: `From ${format}`, disabled: convert.disabled },
@@ -1827,8 +1992,10 @@ function renderBulkBar() {
   const hidden = picked - shownPicked;
   const busy = state.libraryBusy;
   // Phones fit the four actions on one line only without the inner spaces.
+  // data-icon: the glyph a theme may draw beside the label (Windows 95).
+  const ICONS = { SAVE: "save", SEND: "share", CONV: "convert", DEL: "remove" };
   const action = (label, title, run, cls = "btn") => h("button", {
-    type: "button", class: cls, title, disabled: !picked || busy ? true : null,
+    type: "button", class: cls, title, disabled: !picked || busy ? true : null, "data-icon": ICONS[label],
     onclick: (event) => run(event.currentTarget),
   }, PHONE.matches ? `[${label}]` : `[ ${label} ]`);
   bar.classList.toggle("active", picked > 0);
@@ -1908,6 +2075,7 @@ async function bulkSend(btn) {
     id: room.id,
     label: `#${room.name}`,
     detail: room.topic || `${room.members} member${room.members === 1 ? "" : "s"}`,
+    icon: "room",
   }));
   openFormatMenu(btn, (roomId) => bulkBusy(async () => {
     const room = joined.find((r) => r.id === roomId);
@@ -2188,6 +2356,7 @@ function shareButton(entry) {
       id: room.id,
       label: `#${room.name}`,
       detail: room.topic || `${room.members} member${room.members === 1 ? "" : "s"}`,
+      icon: "room",
     }));
     openFormatMenu(btn, async (roomId) => {
       const room = joined.find((r) => r.id === roomId);
@@ -2374,10 +2543,10 @@ function nextKultMove() {
   syncKultRoutine();
 }
 
-/** The header's Kult is a copy of the top bar's, so the drawing lives in one place. */
+/** The header's Kult is a copy of the top bar's (with the Windows 95
+ *  theme's paperclip), so the drawings live in one place. */
 function setupKult() {
-  const svg = $("#appbar-brand .skelly");
-  if (svg) $("#head-kult").append(svg.cloneNode(true));
+  for (const svg of document.querySelectorAll("#appbar-brand > svg")) $("#head-kult").append(svg.cloneNode(true));
 }
 
 function streamUrl(prepared, start) {
@@ -2557,7 +2726,12 @@ async function loadWaveform(prepared) {
 function waveColors() {
   const css = getComputedStyle(document.documentElement);
   const get = (name) => css.getPropertyValue(name).trim();
-  return { played: get("--fg"), ahead: get("--dim"), preview: get("--mid"), empty: get("--faint") };
+  // A theme may colour the waveform apart from its text (--wave-*).
+  const pick = (name, fallback) => get(name) || get(fallback);
+  return {
+    played: pick("--wave-played", "--fg"), ahead: pick("--wave-ahead", "--dim"),
+    preview: pick("--wave-preview", "--mid"), empty: pick("--wave-empty", "--faint"),
+  };
 }
 
 /** Redraw on the next frame; keeps going every frame while playing. */
@@ -3502,11 +3676,7 @@ async function slskLoadUploads() {
 function slskProgress(bytes, size) {
   const width = NARROW.matches ? 14 : 26;
   const fraction = size ? Math.min(1, Math.max(0, bytes / size)) : 0;
-  const filled = Math.round(fraction * width);
-  const percent = Math.round(fraction * 100);
-  return h("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
-    "aria-valuenow": String(percent) },
-  `[${"#".repeat(filled)}${".".repeat(width - filled)}] ${String(percent).padStart(3)}%`);
+  return progressMeter(fraction, width);
 }
 
 function slskDownloadLabel(d) {
@@ -4166,10 +4336,11 @@ function renderFire(f) {
       if (charred[y * w + x]) {
         const stage = charred[y * w + x] - 1;
         ch = BURN_CHARS[stage];
-        cls = `f${5 - stage}`;
+        cls = `f${5 - stage} lt`;
       } else if (mask[y * w + x]) {
+        // "lt" marks letter cells, which a theme may draw as solid blocks.
         ch = level >= 4 ? "@" : "#";
-        cls = `f${level + 1}`;
+        cls = `f${level + 1} lt`;
       } else if (level >= 1) {
         ch = FIRE_TONGUES[level];
         cls = `f${level}`;
@@ -4358,6 +4529,39 @@ function stepFireEgg(f, now) {
   applyTransition(f, current, elapsed);
 }
 
+// Logos in their own box (login, phone drawer, tablet) are shrunk to the
+// box's width when the font would make them wider; the header logo already
+// shrinks with the window.
+const FITTED_LOGOS = ".logo-box .logo, .gate-logo";
+
+function fitLogo(pre) {
+  const box = pre.parentElement;
+  if (!box || pre.offsetParent === null) return;
+  pre.style.removeProperty("--logo-fit");
+  const css = getComputedStyle(box);
+  const room = box.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+  if (room <= 0) return;
+  // Re-measured after each step: glyph widths don't scale exactly with the
+  // font size (hinting, rounding), so one proportional step can fall short.
+  let fit = 1;
+  for (let i = 0; i < 4; i++) {
+    const width = pre.getBoundingClientRect().width;
+    if (width <= room) break;
+    fit = Math.floor(fit * (room / width) * 1000) / 1000;
+    pre.style.setProperty("--logo-fit", String(fit));
+  }
+}
+
+function setupLogoFit() {
+  const logos = Array.from(document.querySelectorAll(FITTED_LOGOS));
+  const fitAll = () => logos.forEach(fitLogo);
+  const observer = new ResizeObserver(fitAll);
+  for (const pre of logos) observer.observe(pre.parentElement);
+  // Theme switches change the font; web fonts can arrive late.
+  new MutationObserver(fitAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  document.fonts?.ready.then(fitAll);
+}
+
 function setupLogoFire() {
   const fires = Array.from(document.querySelectorAll("pre.logo")).map(fireFor);
   const still = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -4404,6 +4608,8 @@ function tickClock() {
   const two = (n) => String(n).padStart(2, "0");
   $("#clock-time").textContent = `${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`;
   $("#clock-date").textContent = `${two(now.getMonth() + 1)}-${two(now.getDate())}-${two(now.getFullYear() % 100)}`;
+  // The taskbar clock (Windows 95 theme) shows minutes only, as Windows does.
+  $("#tray-clock").textContent = `${two(now.getHours())}:${two(now.getMinutes())}`;
 }
 
 // ---------- messages (chat rooms) ----------
@@ -6007,6 +6213,7 @@ async function boot() {
 
 document.addEventListener("DOMContentLoaded", () => {
   setupLogoFire();
+  setupLogoFit();
   setupPanels();
   for (const btn of document.querySelectorAll(".nav-item")) {
     btn.addEventListener("click", () => showView(btn.dataset.view));
@@ -6108,5 +6315,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   setupCursorFx();
   setupScrollbars();
+  setupThemeLabels();
   boot();
 });

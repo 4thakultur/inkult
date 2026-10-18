@@ -124,6 +124,29 @@
             </g>
           </g>
         </svg>
+        <!-- The Windows 95 theme's stand-in for Kult: a paperclip assistant
+             (drawn for Inkult). Same states: awake and moving while music
+             plays (data-move picks how), asleep otherwise. -->
+        <svg class="clippy" viewBox="0 0 32 40" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <g class="cl-body">
+            <path d="M12 31V11a5 5 0 0 1 10 0v21a7.5 7.5 0 0 1-15 0V15" stroke="#404040" stroke-width="2.6"/>
+            <path d="M12 31V11a5 5 0 0 1 10 0v21a7.5 7.5 0 0 1-15 0V15" stroke="#e8e8e8" stroke-width="1"/>
+            <g class="cl-open">
+              <ellipse cx="13" cy="15" rx="3.3" ry="3.8" fill="#fff" stroke="#000" stroke-width=".7"/>
+              <ellipse cx="21" cy="15" rx="3.3" ry="3.8" fill="#fff" stroke="#000" stroke-width=".7"/>
+              <g class="cl-pupils" fill="#000">
+                <circle cx="13.6" cy="15.6" r="1.5"/><circle cx="21.6" cy="15.6" r="1.5"/>
+              </g>
+            </g>
+            <path class="cl-shut" d="M9.8 15.5q3.2 2 6.4 0M17.8 15.5q3.2 2 6.4 0" stroke="#000" stroke-width="1"/>
+            <path class="cl-brows" d="M9.5 10.2q3-2.4 6.2-.6M18.3 9.6q3.2-1.8 6.2.6" stroke="#000" stroke-width="1.4"/>
+          </g>
+          <g class="cl-zzz" fill="#000080" stroke="none" font-family="inherit" font-weight="bold">
+            <text x="23" y="9" font-size="5">z</text>
+            <text x="26" y="5" font-size="6">z</text>
+            <text x="28" y="1" font-size="7">Z</text>
+          </g>
+        </svg>
       </span>
       <!-- Messages only: opens the room list panel on the right. -->
       <button type="button" class="btn appbar-rooms" id="rooms-open" aria-controls="irc-side" aria-expanded="false">[ # ROOMS ]<span class="appbar-dot" id="rooms-dot" hidden></span></button>
@@ -491,12 +514,13 @@
           <p class="setting-label" id="theme-label">THEME:</p>
           <div class="chips setting-options" id="theme-options" role="radiogroup" aria-labelledby="theme-label">
             <button type="button" class="chip" data-theme-id="pipeboy" role="radio" aria-checked="false">PIPEBOY</button>
-            <button type="button" class="chip" data-theme-id="amoled" role="radio" aria-checked="false">AMOLED</button>
-            <button type="button" class="chip" data-theme-id="amoled-white" role="radio" aria-checked="false">AMOLED WHITE</button>
-            <button type="button" class="chip" data-theme-id="amoled-blue" role="radio" aria-checked="false">AMOLED BLUE</button>
-            <button type="button" class="chip" data-theme-id="amoled-purple" role="radio" aria-checked="false">AMOLED PURPLE</button>
-            <button type="button" class="chip" data-theme-id="amoled-orange" role="radio" aria-checked="false">AMOLED ORANGE</button>
-            <button type="button" class="chip" data-theme-id="amoled-red" role="radio" aria-checked="false">AMOLED RED</button>
+            <button type="button" class="chip" data-theme-id="green" role="radio" aria-checked="false">GREEN</button>
+            <button type="button" class="chip" data-theme-id="white" role="radio" aria-checked="false">WHITE</button>
+            <button type="button" class="chip" data-theme-id="blue" role="radio" aria-checked="false">BLUE</button>
+            <button type="button" class="chip" data-theme-id="purple" role="radio" aria-checked="false">PURPLE</button>
+            <button type="button" class="chip" data-theme-id="orange" role="radio" aria-checked="false">ORANGE</button>
+            <button type="button" class="chip" data-theme-id="red" role="radio" aria-checked="false">RED</button>
+            <button type="button" class="chip" data-theme-id="win95" role="radio" aria-checked="false">WINDOWS 95</button>
           </div>
           <p class="setting-note dim" id="theme-detail"></p>
         </div>
@@ -635,6 +659,8 @@
     <div class="volume">
       <button type="button" class="icon-btn" id="mute" aria-label="Mute"></button>
       <input type="range" id="volume" class="slider" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+      <!-- Taskbar clock: Windows 95 theme only. -->
+      <span class="tray-clock" id="tray-clock" aria-hidden="true"></span>
     </div>
     <audio id="audio" preload="auto"></audio>
   </footer>

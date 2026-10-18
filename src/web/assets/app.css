@@ -32,9 +32,10 @@
   --fire-hot-rgb: 230 255 102;
 }
 /* True black so OLED pixels switch off; the phosphor text stays but with
-   a tighter glow, and nothing behind it is tinted. The amoled-* variants
-   share this base and only swap the phosphor colour below. */
-:root[data-theme^="amoled"] {
+   a tighter glow, and nothing behind it is tinted. The colour themes
+   (green, white, blue, ...) share this base and only swap the phosphor
+   colour below. */
+:root:is([data-theme="green"], [data-theme="white"], [data-theme="blue"], [data-theme="purple"], [data-theme="orange"], [data-theme="red"]) {
   --bg: #000;
   --bg-rgb: 0 0 0;
   --bg-glow: #000;
@@ -43,11 +44,11 @@
   --faint: #0f3518;
   --glow: 0 0 3px rgb(var(--fg-rgb) / .4);
 }
-/* AMOLED colour variants. Each step of the ramp (mid, line, dim, faint) is a
+/* Colour variants of the black base. Each step of the ramp (mid, line, dim, faint) is a
    darker shade of --fg, held at or above the contrast-against-black floor the
    green ramp gives, so dim text stays as legible in every hue. */
 /* Monochrome white phosphor; burns with a cold, ice-blue fire. */
-:root[data-theme="amoled-white"] {
+:root[data-theme="white"] {
   --fg: #d8d8d8;
   --fg-rgb: 216 216 216;
   --bright: #ffffff;
@@ -65,7 +66,7 @@
   --fire-hot-rgb: 198 218 255;
 }
 /* Cyan-blue phosphor; burns like an indigo gas flame. */
-:root[data-theme="amoled-blue"] {
+:root[data-theme="blue"] {
   --fg: #45c8ff;
   --fg-rgb: 69 200 255;
   --bright: #b5e9ff;
@@ -83,7 +84,7 @@
   --fire-hot-rgb: 188 182 255;
 }
 /* Violet phosphor; burns hot magenta. */
-:root[data-theme="amoled-purple"] {
+:root[data-theme="purple"] {
   --fg: #cf8fff;
   --fg-rgb: 207 143 255;
   --bright: #ecd2ff;
@@ -102,7 +103,7 @@
 }
 /* Amber phosphor, as on old amber monitors. Danger moves to crimson so
    errors don't read as normal amber text. Burns crimson. */
-:root[data-theme="amoled-orange"] {
+:root[data-theme="orange"] {
   --fg: #ffa733;
   --fg-rgb: 255 167 51;
   --bright: #ffdcad;
@@ -124,7 +125,7 @@
 /* Red phosphor. Red is the normal text colour here, so danger becomes
    hazard yellow and warnings amber; both still carry their !! / ** prefixes.
    Burns gold. */
-:root[data-theme="amoled-red"] {
+:root[data-theme="red"] {
   --fg: #ff5b52;
   --fg-rgb: 255 91 82;
   --bright: #ffbdba;
@@ -302,7 +303,7 @@ h1, h2, p { margin: 0; font-size: inherit; font-weight: inherit; }
 /* On desktop the burning logo sits in the header between the system vars
    and the motto; it is 61 columns wide, so it shrinks with the viewport to
    fit down to the 900px breakpoint, below which the logo box takes over. */
-.head-logo { margin: 0; justify-self: center; font-size: calc(clamp(7px, 1.15vw, var(--logo-max)) * var(--logo-scale, 1)); }
+.head-logo { margin: 0; justify-self: center; font-size: calc(clamp(7px, 1.15vw, var(--logo-max)) * var(--logo-scale, 1) * var(--logo-fit, 1)); }
 .head-side { display: flex; align-items: center; gap: 22px; justify-self: end; }
 .motto { text-align: left; line-height: 1.6; }
 /* Twice the top bar's size, with a thinner line so it reads as the same
@@ -319,11 +320,13 @@ h1, h2, p { margin: 0; font-size: inherit; font-weight: inherit; }
 .logo-box { text-align: center; overflow: hidden; }
 .logo {
   margin: 4px auto; display: inline-block; text-align: left;
-  font: 700 calc(clamp(6px, 1.45vw, var(--logo-max)) * var(--logo-scale, 1))/1.05 var(--font); letter-spacing: 0;
+  font: 700 calc(clamp(6px, 1.45vw, var(--logo-max)) * var(--logo-scale, 1) * var(--logo-fit, 1))/1.05 var(--font); letter-spacing: 0;
   color: var(--fg); text-shadow: 0 0 6px rgb(var(--fg-rgb) / .8), 0 0 18px rgb(var(--fg-rgb) / .35);
 }
 /* --logo-scale (set by app.js) shrinks the characters while the logo's
-   easter egg draws on a finer grid, so the box keeps its size. */
+   easter egg draws on a finer grid, so the box keeps its size. --logo-fit
+   (also app.js, fitLogos) shrinks a logo that would be wider than its box,
+   whatever the font: monospace widths differ between themes and systems. */
 /* Burning logo (app.js): heat levels from embers to white-hot. The --fire-*
    ramp comes from the theme, see the theme blocks at the top. */
 .logo.fire {
@@ -767,6 +770,8 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
 /* Compact-only chrome (see the compact block below); on wide screens the
    drawer wrapper is transparent to layout. */
 .appbar, .panel-top, .scrim, :root .compact-only { display: none; }
+/* Windows 95 theme only (see its section). */
+.tray-clock, .clippy { display: none; }
 
 /* Kult, the mascot (top bar on compact screens, header on wide ones).
    Pivots are in viewBox units (transform-box: view-box), so they line up
@@ -1002,7 +1007,7 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
 .gate { min-height: 100vh; min-height: 100dvh; justify-content: center; padding-bottom: calc(24px + var(--safe-b)); }
 .gate-box { width: 100%; max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .gate-box > .box-title { width: 100%; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-.gate-logo { margin: 8px auto; font-size: calc(clamp(5px, 1.9vw, 13px) * var(--logo-scale, 1)); }
+.gate-logo { margin: 8px auto; font-size: calc(clamp(5px, 1.9vw, 13px) * var(--logo-scale, 1) * var(--logo-fit, 1)); }
 .gate-intro { color: var(--bright); text-align: center; max-width: 52ch; }
 .gate .form-grid { width: 100%; max-width: 460px; margin-top: 6px; }
 .gate .btn-primary { justify-self: center; padding: 4px 12px; }
@@ -1591,7 +1596,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   .drawer .badge { margin-left: auto; }
   .drawer .logo-box { display: block; padding: 10px 6px; }
   /* 61 columns across the panel width (about 7px per character). */
-  .drawer .logo { font-size: calc(7px * var(--logo-scale, 1)); }
+  .drawer .logo { font-size: calc(7px * var(--logo-scale, 1) * var(--logo-fit, 1)); }
   body.chat-mode .drawer .head-box, body.chat-mode .drawer .logo-box { display: block; }
   .drawer .head-box { padding: 8px 12px 0; }
   .drawer .head-box > .box-title { display: none; }
@@ -1828,31 +1833,31 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   --sniper-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v12M16 19v12M1 16h12M19 16h12'/%3E%3C/g%3E%3Cg stroke='%23ff3b2f' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v12M16 19v12M1 16h12M19 16h12'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff3b2f' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, pointer;
   --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%2341ff6a' stroke='%23000' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
 }
-:root[data-theme="amoled-white"] {
+:root[data-theme="white"] {
   --sniper-idle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3Cg stroke='%23d8d8d8' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff3b2f' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, crosshair;
   --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%23d8d8d8' stroke='%23000' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
   --blaze-idle: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAADTklEQVR42u1ZO64UMRB8EREJFwBuQPQOASEnQULiKog7cIGXcAokNiMnJh/Ug8qq6bFnqtvexwK2ZO1qd6a2uvo73ru7ueaaa6655prrMdaTpy8X21OJ/8jhz168WfcovH9Ro1vGCy9z9vP7D6vTe8mgYowIoJHVBzhZvJFcRuj8GFqFbrAAsj3KkN4AAg6wMuLgPt7ZiooEG+3wKKfa9ayRitej61UqELeunjaGQGasiNicDCOrKtsVdVTN8dAcW8Gz6169/dy0SdVH+e5Uc84sCM2CR0SHYbYhBhypOvDdp5/rtcDh+6LZ4n+fgzHbEoD3+v23jZ1nOHa97db1arVu3es5Htlpn398WFY+reT3SdviUxxljrPXWuYKOq/XgpQPQM6uE0IlaDiAEtVjJ6bxAj/gKjimi+2jyiEk2nLUtjiJVX1qPHzVP8Bavnxd1o3vPU5E6CISDECGccacOLHgtIwQq9mKY9fB4WakvWdsoUwv3mm2EJS+Qp7Zxb/J8xgqriD6hg8Cmu9VA8jzQbJxZVN1Nn0ZI5hcv4Eul0shxQ6COGIAFJzvP5Z1GznbbJgwDxUcLv0I6EAr2tiF7QNIqGwFhytsokpu7OIACrbWDR9LKuYUqNKH+oQDCGC2LONr80sExzDsHjOQHS8MihscYKDF+gBS+XBrrQWRigMuvvqojgeOcTGNos7yOJhlwCOLw4EMbdT5twCx82uCK5nqRQIOAlEQbIcDgeC8o0H0jA8yH+/VCuRxEsccVZxg1ajiQFfYJOLtcOw+jDKRh4MNEJNCGxOJVXEwv2BHA9EHtRiETRwEctZhXIl6Aojtis6IZ/qI53hVHD+TpQzj9oEKknGYL7Oi45o4wZPWU5ys4/3soD7NtXAwy0RbYc1fgXbYxMH8is6RAvK9MUtoNE6v45lPptTful38WN6Dk65A9LjZZdit42Qz1eNEn3qubZc6tyj6qLYVAM4Gy6xMqefXniGRX3EWlHla8XwSp+s7HLTiXrvMJmsXaqto4USH3hYOnnhN7/BBYusMJnjyu8NJ/AdWxQmK7A/cNnPLKD7RYbyGg4O8XhwcCUQC6MjvEU7L0SFe5q+DAQ67Gp9MRfwb+PxBu7S/ACbOxPHrF62gIGH39uG2AAAAAElFTkSuQmCC");
   --blaze-hot: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAAEB0lEQVR42u1aMY4UQQzciIiMDyAhPkHGF3gDAX8hIuIt9wEiXsAbEAnZJoO8Uu3W1tjdtntO6KQdaXS6vZkau6rsds/t6VQ8Xr1+u9l5ehyPo2ueh4levo4v2kC4V3/+TzJWYziKFw+riju6/iic5cS6Sa1gHB3Lm3efdvd2c2Ksldxm+B0Druhuz7Vz2TgA6gQYkZwhxUsmEiuDpTiK2YlJO4U+o2vmaicAzvuPX0t5jJ7TNmFE8oroKwYEMSCnE1dkQvzO+COsmVBewWXyAl5HJ2/JWzFQu4N5CUXEzwL58Pnn5VQ8Jr8ilmce+wzPGJE/EkoNMYqJcZBfdH3Ek1dM1eLUDhiZJmMEcBGZMFX0CAakeOJXRVcMFnxGPhLD/XwtTi82D4cF//Ltz+W033X2GQnpdbxO10Bh4fndmc7bgHhLaqYgWCNP/1RseBAIVvH5cyVfxWLROQA10Ex0Fvz703Y1kZIzElINBsxR1/C4sefzfVEHycwN/HdvOeXOH3WVH7+2neisUWaus89QTHiu5WnYyFcLN8rpcgMMpKJrcPb3EY4FANGVdE56YKArQXaf4dgZdY1Bcte8mCRdChNVv3mie8vapOI3iAYuuTh0iR/lBV4h+u+/N96jzuHhMA92L8wDvrPLql1wucEOkK4dI9GBNpCEhEaij4hm8XW507lsJDzi0dbudcJZPLjO8oJY3Nm0c0Q4do3xY4eHldgRXuNh81RFB44dFj8Xv8f3EOh8Pm+ofAjn7VwmAbo4SkpGeODocqSdcLScMg4OEKNDcDYeiG6iaedIzER3/KBYEYf3gjXDM3DYQEkT3eWFnDgfzmsKBDBte7ojmxHNOBDdgtPhORsPCOGltGJE4FgMdrIBdVjM4GgcXlfM4EB8Fim5fd7hqIETObk4XlEk9LoBMdmoWCYrmxgHpaIndi47HCSmM0PW0MDR6tJdURaH70t2jTAvPFuXjgo/Kri308zg8BKty3JaeM/ZVUcrDq/zKzgQiMmu4uj7j6pgbCKt2EqBsYmw08tUe4SDLg+9Kp2McXBYPNkXijsgdXY3MSYbJlrFwdK4goNdR2aLOsLBAJt8FxTiYIY5AqfwFjnEwUyUKPYYiCt/NkRlcFYJ0tmqU2HaiVaI5niS7xGHOEmOU/FUZ6lIr5aBsL3jbXAnMcVJdp8pTmWbOsvrKJwj+MmKNcNJLl9HxnPbzumOpeJCD4fnlSrR/DO53Z7iYEgs/tNyh4MWv5oX3r0ViivkGaPGSjwWRyOeEw+Xd6JVXBjhNL5awJV9t+RUDeThFEkO8yosyUMcO46Kp7AMhjhmnuo/4TfPlUXzhDgW0BE4jW+luDiNL0g9azxNQz9bPA29hs584DxwwuMfGUHEjs48PP0AAAAASUVORK5CYII=");
 }
-:root[data-theme="amoled-blue"] {
+:root[data-theme="blue"] {
   --sniper-idle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3Cg stroke='%2345c8ff' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff3b2f' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, crosshair;
   --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%2345c8ff' stroke='%23000' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
   --blaze-idle: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAADVklEQVR42u1Zu60UQRB8BhYWIgA8HAxCQMIgBCQ8cngpIBIgEDwkQsDFIABSQAh3Ue9TjWp7Z3are+YeB8xIozvd7dZVV3937uZmrrnmmmuuuea6j/XowbPF9lTiP3L4k4ev1z0K71/U6Jrxwsuc/fzxu9XpvWRQMUYE0MjqA5ws3kguI3S+D61CN1gA2R5lSG8AAQdYGXFwH+9sRUWCjXZ4lFPtetZIxevR9SIViFtXTxtDIDNWRGxOhpFVle2KOqrmeGiOreDZdS+ffm7apOqjfHeqOWcWhGbBI6LDMNsQA45UHXj79td6LXD4vmi2+N/nYMy2BOC9efF9Y+cZjl1vu3W9Wq1b93qOR3ba5x/eLyufVvL7pG3xKY4yx9lrLXMFnddrQcoHIGfXCaESNBxAieqxE9N4gR9wFRzTxfZR5RASbTlqW5zEqj41Hr7qH2Atnz4u68b3HicidBEJBiDDOGNOnFhwWkaI1WzFsevgcDPS3jO2UKYX7zRbCEpfIc/s4t/keQwVVxB9wwcBzfeqAeT5INm4sqk6m76MEUyuO6BXX5ZCih0EccQAKDjfvi7rNnK22TBhHio4XPoR0IFWtLEL2weQUNkKDlfYRJXc2MUBFGytGz6WVMwpUKUP9QkHEMB+/rjL+Nr8EsExDLvHDGTHC4PiBgcYaLE+gFQ+3FprQaTigIuvPqrjgWNcTKOoszwOZhnwyOJwIEMbdf4tQOz8muBKpnqRgINAFATb4UAgOO9oED3jg8zHe7UCeZzEMUcVJ1g1qjjQFTaJeDscuw+jTOThYAPEpNDGRGJVHMwv2NFA9EEtBmETB4GcdRhXop4AYruiM+KZPuI5XhXHz2Qpw7h9oIJkHObLrOi4Jk7wpPUUJ+t4PzuoT3MtHMwy0VZY81egHTZxML+ic6SAfG/MEhqN0+t45pMp9dduFz+W9+CkKxA9bnYZdu042Uz1ONGnnkvbpc4tij6qbQWAs8EyK1Pq+bVnSORXnAVlnlY8n8Tp+g4HrbjXLrPJ2oXaKlo40aG3hYMnXtM7fJDYOoMJnvzucBL/gVVxgiL7A7fN3DKKT3QYr+HgIK8XB0cCkQA68nuE03J0iJf562CAwy7GJ1MR/wY+f9Au7S+AiTNx/PoNsP6n4pE9lh0AAAAASUVORK5CYII=");
   --blaze-hot: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAAED0lEQVR42u1aMY4UQQzcgIyElJCUiIhf8AASfsAz+ADRvYSIhxAhEZISoMsGeaXara2xu233nNBJO9LodHszNXZV2e6e29OpeLx68Xaz83Q/7kfXPHcTPX8dn7WBcK/+/J9krMZwFC8eVhV3dP1ROMuJdZNawTg6ljcvP+3u7ebEWCu5zfA7BlzR3Z5r57JxANQJMCI5Q4qXTCRWBktxFLMTk3YKfUbXzNVOAJz3rx9KeYye0zZhRPKK6CsGBDEgpxNXZEL8zvgjrJlQXsFl8gJeRydv5K0YqN3BvIQi4meBfHj343wqHpNfEcszj32GZ4zIHwmlhhjFxDjIL7o+4skrpmpxageMTJMxAriITJgqegQDUjzxq6IrBgs+Ix+J4X6+FqcXm4fDgn/++Od82u+69hkJ6XW8TtdAYeH53TWdtwHxRmqmIFgjT/9UbHgQCFbx+XMlX8Vi0TkANdBMdBb865ftYiIlZySkGgyYo67hcWPP5/uiDpJZN/DfvXHKnT/qKt+/bTvRWaPMus4+QzHhuZanYSNfLdwop/MNMJCKrsHZ30c4FgBEV9I56YGBLgTZfYZjZ9Q1Bsld8mKSdBQmqn7zRPfG2qTiN4gGLrk4dMSP8gKvEP3XzyvvUefwcJgHuxfmAd/ZsWoXnG94/LtdSNeOkehAG0hCQiPRR0Sz+DrudF02Eh7xaGv3OuEsHlxneUEs7mzaOSIcu8b4Ma49rMSO8BIPm6cqOnAsDoufi9/jewj0+3HbUPkQztu5TAJ0cZSUjPDA0XGknXA0ThnHSAJRWhiVeOyw3Ew07RyJNdENPyhWxOG9YM3wDBw2UNJEN3khJ86H85oCAUzbnu7IZkQzDkS34HTxnI0HhPAorRgROBaDnWxAXSxmcDQOrytmcCA+i5TcPu9w1MCJnFwcrygSel2BmGw7lKxsYhyUip7YuexwkJiuGbKGBo5Wl+6Ksjh8X7JrhHnh2To6Kvyo4N5OM4PDI1rHclp4z9lVRysOz/kVHAjEZFdx9P1HVTA2kVZspcDYRNjpZao9wkGXh16VTsY4GPcWT/aF4g5Ind1NjMmGiVZxMBpXcLDryGxRRzhYwCbfBYU4WMMcgVN4ixzimIEst0Sxx0Bc+bNFVAZnlSBdW3UqTDvRCtEcT/I94hAnyXEqnupaKtKrZSBs73gb3ElMcZLdZ4pT2abO8joK5wh+smLNcJLj68h4rts53bFUXOjh8HqlSjT/TG63pzhYJBb/abnDQYtfzQvv3grFFfKMpcZKPBZHI54TLy5vRKu4MMJpfLWAK/tm5FQN5OEUSQ7zKozkIY4JdlQ8hTEY4ph5qv+E3zxXFs0T4lhAR+A0vpXi4jS+IPWk8TQN/WTxNPQaOvOOc8cJj38jxaEmO3HthAAAAABJRU5ErkJggg==");
 }
-:root[data-theme="amoled-purple"] {
+:root[data-theme="purple"] {
   --sniper-idle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3Cg stroke='%23cf8fff' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff3b2f' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, crosshair;
   --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%23cf8fff' stroke='%23000' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
   --blaze-idle: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAADW0lEQVR42u1ZO7ITMRB8RUBERkZGFScg4RBwCGJizvBSInISzsAFiIE7cAHIyIRHz61qzUq7MyP5YUCqUtll77Z7er4r39ystdZaa6211lr3sZ49eJJkLyX+I4e/fPg871l4/6JG14znXuLst49eZaePkkHFmBFAM6sPcKJ4M7nM0Pk+tHLdIAEke5YhowEEHGBFxMF9vKMVFQk22+FeTq3rWSMr3oiuF6lA3LpG2hgCmbE8YnMyzKyqbJfXUS3HQ3NsC55c9/Hxm65NVn0s3x1qzpkFoVlwj+gwTDbEgCOtDvz54kO+Fjh8nzdb9O9zMEZbAvC+Pb2t7DzCketl9663VuvevZrjnp3yeXr9KfPpJb9O2h6f4ihxnLy2Mtegc74WpHQAcnYdECpBwwEUqB4bMYUX+AHXgiO6yN6rHIZES3tti5PYqk+Lh676O1gpvf+SN77XOB6hi0gwABnGGXPgxILTM8JYzTKOXAeHi5HynrENZTppp8lCUOoKeWQX/ybPY6i4BtErPghovtcaQJoPko0rm1Vn0ZcxnMl1B/T1XSqk2EEQxxgABSd9/n63xfmnzYYZ5qGCw6UfAe1oRZVd2DqADJWt4HCFDVTJyi4OIGdrrfhIUjEnR5Xe1ccdQMX5P37ljG/NLy6cE4bcIway4w2DYoUDDLRYHUBmPtRaW0FkxQEXXX2sjgdOrq4njbzO0jiYZcAjisOBDG2s828BYue3BLdk6kakMw4C0SDYls9ZIDhvbxA94oPMx3trBdI4gWOOJo6zajRxoCtsMuJtcOQ+jDKeh4MKiEmhjRmJNXEwv2B7A1EHtTEIuzgI5KjDuBKNBBDb5Z0Rj/QxnuM1cfRMFjKM2wcqSMRhuswaHdfFcZ60HuJEHa9nB+vTXA8Hs4y3Fbb85WiHXRzMr+gcISDdG6OEZuOMOp75REr9tdvFj+UjOOEKRI+bQ4ZdO040UzWO96nn0nZZ5xaLPlbbCgBng2RWpNTz68iQWB0LnM+CIk8rmk/gdH2Dg1Y8bJfMLad2YW0VPRzv0NvDwROv6O0+SOydwThPfjc4gf/AmjhOkfWBWzW3zOLjHcZbODjIG8Y5Hwl4AmjP7x5Oae8QL/LXwQSHXYxPpCL+DXz+oF22vwAWzsLR6zfp9fdm3giwnAAAAABJRU5ErkJggg==");
   --blaze-hot: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAAEHklEQVR42u1aMY7UQBBckRCSImJ+QMBDSAh5CDmPIOEX5DwBiVdchkQAidk2U952ubune8YndNJask63Z5e7q6q7Z3x7uRSP189eLXJe7sf9GDXP3URPX8cnbSDcyz//JxmzMZzFi4VVxY2uPwtnOrHRpGYwzo7l3fO3h3tHc9JYM7n18EcMOKO7PFfOaeMAaCRAj+QMKVYynlgZLMZhzJGYuFPwM0bNXO0EwPn04n0pj+g5wyb0SJ4RfcaAIAbkjMTlmRC/a/wIqyeUVXCZvIA3opM18mYMNNzBrIQ84nuBfHv5cT0ZT5NfEcsyj3yGZ0TkR0KxIaKYNA7y8673eLKKqVqc3AE902SMAC48E6aKHsGAFEv8quiMoQXvkY/EcL++FqcVm4WjBX9483k95Xde+0RCWh1vpGugsPD80TWdtQGxRmqmILRGlv6p2PAgEMzi68+ZfBZLi64DYAP1RNeCLx++biZiciIh2WDAjLqGxY08X9/ndZDMukH/3RqnuvN7XWX58v0gutYos66Tz1BMeK7kKdjIlwvXy2m9AQZi0Tk4+XuEIwFAdCZdJx0YaCNoJUswr6fXNYLktrw0STwKE1W/WKJbY61T8QtEA5e6OHjER3mB1030Hw8b717nsHA0D2sszTzgOztW5YJ/wfz6s5HOHSPRgRaQhIQi0SOitfg87nhdFgmPeLi1W52wFw+uW0luYunOxp3Dw1kxhB/h2sBK7AhveinzVEXfeL7GIfHr4rf4DoF+/1wWVD6Es3YunQBNHCYlIzxweBxxJ4zG6S4eEasRxYVRiWc9JDcRjTpHYk2056cVK+KwXrCmeG442kBJE+3zajnpfHReXSCAcdvjHVmPaI0D0SU4Xjxn4wEhepRWjLiRJARdT21AXixmcDgOqyum4mnia5GS2+cDDhs4kZMdj1EUCb1uQDuyrweTlU1MB8WiJ3YuR5yWGK8ZsoYGDlcX74qyOPq+ZNdw88KzeXRU+GHBrZ1mBkePaB7LaeEtZ1cdfXC2mvMzOBBIk13F4fcfVcG0ibhiKwWmTYSdXqbaXZzW5aFXpZPtcNq4l3iyLxQPQOzs0cR2ZDcTzeJgNM7gYNeR2aJGOFjAJt8F+ThtDXMGTuEtso8jBrrmlih2H0hXfm8RlcKZJIjXViMVxp1ohmgdT/I9YoiT5DgVT3Ut5ek1ZCBs7/Q2eCQxxkl2ny5OZZvay+ssnDP4yYrVw0mOrzPjuW3neMdScaGFo9crVaL1z+R2u4uDRWLxn5ZHflqLn80L794KxeXyjKXGTDzrJqUez0UvLneiVVzo4Qx8tUBX9m7kVA1k4RRJdvMqjOQY5yrYWfEUxqCLI+ap/hN+sVxZNI+LIwGdgTPwrRQTZ+ALUo8az6ChHy2eAb1CZ95x7jju8Rdc27hZ0HMAOAAAAABJRU5ErkJggg==");
 }
-:root[data-theme="amoled-orange"] {
+:root[data-theme="orange"] {
   --sniper-idle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3Cg stroke='%23ffa733' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff3b2f' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, crosshair;
   --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%23ffa733' stroke='%23000' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
   --blaze-idle: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAADW0lEQVR42u1ZMZIUMQy8ooqCCOJ7AAFVlxGQ8wACcv5BSsRT7gOE94n7xmXwgWHlmzZtjT0jyd5jAbvKtVu7M71SS2ppvFdXc80111xzzTXXU6w3z14ssicT/1HAPz5/nfYovH+Ro0vGcy8J9peX1ynovcZAMUYk0Ej1AU4Ub6QtI3h+Cq5cN0gCyR7lSG8CAQdYEXJwH++ooqLARgfca1PteubIitfD61kUiFtXTxtDIjOWh2wuhpGqyn55A1ULPDjHtuDJdbev3jZ9svJj+e6Qc64sEM2Ee0iHY7JBBgJpDeDPmw/pWuDwfd5q0b/PyRhtCcC7v35f+HmEI9fLbl1vVevWvdrGPT/l8+XT52RPq/h10bbsyYGSwMlrrXINPKdrYZROQK6uA4Ny0nACBdRjQ6bYBfuAa8ERXmTvKYeh0Ja9tsVFbOWnZodW/R2sZfn2NW18r3E8RGeS4AAqjCvmIIgZp+WEUc0SjlyHgIuT8p6xDTK96KDJQlJqhTzyi3+T5zEoroH0wh4kNN9rTSBtD4qNlc3Ks/DLGM7iWjPx9l02igMEcowJkHGWu++PW4J/2uyYYR7KOCz9SGhHKyr8wtYJZFC2jMMKG1DJwi9OIGdrLeyRomKbHCq9y487gXLwfzykiq/NLy6cE4bcIw5y4A2DYoEDDLRYnUBme6i11pLIigNbtPpYAw+cpK4njrzB0jiYZWBHFIcTGdxY598MxMGvEW6p1A1JKw4S0UDY1p6VIARvbxA9sgeVj/dWBdI4gWOOKo5TNao44BU+GfE2OHIfRhnPw0EBxEahjRkNq+JgfsH2JqJOamMSNnGQyNGAsRL1JBD75Z0Rj/gxnuNVcfRMFnKM2wcUJBIwLbPGwDVxnCethzjRwOvZwfo018LBLONthbV4OdphEwfzKzpHCEj3xqhBo3F6A8/2RKT+0v3ix/IenLAC0eNml2OXjhOtVI3jfeo5t1/WucXCj9W339lL1SCVFZF6fu0ZEovX9Swo8rSi7Qmcrm9w0Iq7/ZK55dQurK2iheMdels4eOIVvt0Hia0zGOfJ7wYn8B9YFcdJsj5wK+aWUfZ4h/EaDg7yunHWIwFPAu3F3WPTsneIF/nrYEDAzmZPRBH/Bnv+oF+2vwAmzsTR6xd2Gh2N41WXvwAAAABJRU5ErkJggg==");
   --blaze-hot: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAWCAYAAAAvrxV9AAAEHklEQVR42u1aMY7VQAz9QkIUVHABKiRqTsAZKOi4DxLV3mkbSk5BQYWEaMN3mJd1XmyPPZMVWulHilb7N3mx33u2Z7L/cikeb5+9WOS83I7bMWqem4mevo5P2kC4l3/+TzJmYziLFwurihtdfxbOdGKjSc1gnB3Lp+evDveO5qSxZnLr4Y8YcEZ3ea6c08YB0EiAHskZUqxkPLEyWIzDmCMxcafgZ4yaudoJgPP15ZtSHtFzhk3okTwj+owBQQzIGYnLMyF+1/gRVk8oq+AyeQFvRCdr5M0YaLiDWQl5xPcCuX/9fj0ZT5NfEcsyj3yGZ0TkR0KxIaKYNA7y8673eLKKqVqc3AE902SMAC48E6aKHsGAFEv8quiMoQXvkY/EcL++FqcVm4WjBf/57sN6yu+89omEtDreSNdAYeH5o2s6awNijdRMQWiNLP1TseFBIJjF158z+SyWFl0HwAbqia4FXz5+3kzE5ERCssGAGXUNixt5vr7P6yCZdYP+uzVOdef3uspy9+UgutYos66Tz1BMeK7kKdjIlwvXy2m9AQZi0Tk4+XuEIwFAdCZdJx0YaCNoJUswr6fXNYLktrw0STwKE1W/WKJbY61T8QtEA5e6OHjER3mB103079823r3OYeFoHtZYmnnAd3asygX/gvnzayOdO0aiAy0gCQlFokdEa/F53PG6LBIe8XBrtzphLx5ct5LcxNKdjTuHh7NiCD/CtYGV2BE+6KXMUxV94/kah8Svi9/iOwRafv9YUPkQztq5dAI0cZiUjPDA4XHEnTAap7t4RKxGFBdGJZ71kNxENOociTXRnp9WrIjDesGa4rnhaAMlTbTPq+Wk89F5dYEAxm2Pd2Q9ojUORJfgePGcjQeE6FFaMeJGkhB0PbUBebGYweE4rK6YiqeJr0VKbp8POGzgRE52PEZRJPR6ANqRfT2YrGxiOigWPbFzOeK0xHjNkDU0cLi6eFeUxdH3JbuGmxeezaOjwg8Lbu00Mzh6RPNYTgtvObvq6IOz1ZyfwYFAmuwqDr//qAqmTcQVWykwbSLs9DLV7uK0Lg+9Kp1sh9PGvcSTfaF4AGJnjya2I7uZaBYHo3EGB7uOzBY1wsECNvkuyMdpa5gzcApvkX0cMdA1t0Sx+0C68nuLqBTOJEG8thqpMO5EM0TreJLvEUOcJMepeKprKU+vIQNhe6e3wSOJMU6y+3RxKtvUXl5n4ZzBT1asHk5yfJ0Zj9rO0Y6l4kILR69XqkTrn8ntdhcHi8TiPy2P/LQWP5sX3r0VisvlGUuNmXjWTUo9noteXO5Eq7jQwxn4aoGu7N3IqRrIwimS7OZVGMkxzlWws+IpjEEXR8xT/Sf8YrmyaB4XRwI6A2fgWykmzsAXpB41nkFDP1o8A3qFzrzh3HDc4y+M4Pl0a1gNygAAAABJRU5ErkJggg==");
 }
-:root[data-theme="amoled-red"] {
+:root[data-theme="red"] {
   --sniper-idle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3Cg stroke='%23ff5b52' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23fff04d' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, crosshair;
   --sniper-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23000' stroke-width='3.5' stroke-opacity='.75'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v12M16 19v12M1 16h12M19 16h12'/%3E%3C/g%3E%3Cg stroke='%23fff04d' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v12M16 19v12M1 16h12M19 16h12'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23fff04d' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, pointer;
   --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%23ff5b52' stroke='%23000' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
@@ -1891,6 +1896,795 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   html { cursor: var(--cursor-idle); }
   input:not([type="range"], [type="checkbox"], [type="radio"]), textarea { cursor: text; }
 }
+
+/* ---------- Windows 95 ----------
+   Grey 3D controls on a teal desktop, after the Windows 95 shell: each box
+   is a window with a navy caption, buttons and fields are drawn with the
+   two-pixel bevels of the real thing (light from the top left), lists are
+   white "details" views, the player is the taskbar and the phone drawer the
+   Start menu. Sizes follow the 96-dpi originals: 11px text (MS Sans Serif
+   8pt), 23px buttons, 18px captions, 16px scrollbars, 13px check boxes.
+   app.js rewrites control labels from "[ RUN ]" to "Run" while this theme
+   is on (see the Windows 95 labels section there) and leaves the native
+   scrollbars to the rules below. Glyphs are pixel-for-pixel SVGs. */
+:root[data-theme="win95"] {
+  color-scheme: light;
+  --bg: #c0c0c0;
+  --bg-rgb: 192 192 192;
+  --bg-glow: #008080;
+  --panel: #c0c0c0;
+  --panel-rgb: 192 192 192;
+  --fg: #000;
+  --fg-rgb: 0 0 0;
+  --bright: #000;
+  --mid: #000;
+  --dim: #808080;
+  --faint: #808080;
+  --line: #808080;
+  --warn: #000080;
+  --danger: #800000;
+  --danger-rgb: 128 0 0;
+  --glow: none;
+  /* The classic flame, maroon to pale yellow. */
+  /* Kept dark enough to stand out on the grey face. */
+  --fire-1: #800000;
+  --fire-2: #b00000;
+  --fire-3: #d83000;
+  --fire-4: #f07000;
+  --fire-5: #ffb000;
+  --fire-glow-rgb: 216 48 0;
+  --fire-ember-rgb: 176 0 0;
+  --fire-hot-rgb: 255 176 0;
+  --wave-played: #000080;
+  --wave-ahead: #808080;
+  --wave-preview: #0000ff;
+  --wave-empty: #c0c0c0;
+  --font: "Microsoft Sans Serif", "MS Sans Serif", Tahoma, "Segoe UI", Arial, "Liberation Sans", "DejaVu Sans", sans-serif;
+  --w95-mono: Fixedsys, "Fixedsys Excelsior 3.01", "Lucida Console", "Courier New", "DejaVu Sans Mono", monospace;
+  --w95-desktop: #008080;
+  --w95-face: #c0c0c0;
+  --w95-title: #000080;
+  --w95-select: #000080;
+  --w95-tip: #ffffe1;
+  /* Bevels, outermost ring first: window frame, push button, pressed
+     button, default (Enter) button, sunken field, and the one-pixel status
+     bar panel. */
+  --w95-window: inset -1px -1px #000, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
+  --w95-raised: inset -1px -1px #000, inset 1px 1px #fff, inset -2px -2px #808080, inset 2px 2px #dfdfdf;
+  --w95-pressed: inset -1px -1px #fff, inset 1px 1px #000, inset -2px -2px #dfdfdf, inset 2px 2px #808080;
+  --w95-default: inset -2px -2px #000, inset 1px 1px #000, inset 2px 2px #fff, inset -3px -3px #808080, inset 3px 3px #dfdfdf;
+  --w95-default-pressed: inset 0 0 0 1px #000, inset 0 0 0 2px #808080;
+  --w95-field: inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #000;
+  --w95-status: inset -1px -1px #fff, inset 1px 1px #808080;
+  --w95-thin-raised: inset -1px -1px #808080, inset 1px 1px #fff;
+  --w95-i-play: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M5 3l7 5-7 5z' fill='%23000' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-pause: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='4' y='3' width='3' height='10' fill='%23000'/%3E%3Crect x='9' y='3' width='3' height='10' fill='%23000'/%3E%3C/svg%3E");
+  --w95-i-busy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='3' y='1' width='10' height='2' fill='%23000'/%3E%3Crect x='3' y='13' width='10' height='2' fill='%23000'/%3E%3Cpath d='M4.5 3.5h7v2l-3 2.5 3 2.5v2h-7v-2l3-2.5-3-2.5z' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M6 4.5h4l-2 2z' fill='%23808000'/%3E%3Cpath d='M5.5 12h5v-1l-2.5-2-2.5 2z' fill='%23808000'/%3E%3C/svg%3E");
+  --w95-i-minimize: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='14' viewBox='0 0 16 14' shape-rendering='crispEdges'%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/svg%3E");
+  --w95-i-maximize: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='14' viewBox='0 0 16 14' shape-rendering='crispEdges'%3E%3Crect x='3.5' y='2.5' width='9' height='8' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='10' height='2' fill='%23000'/%3E%3C/svg%3E");
+  --w95-i-find: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M6.5 2.5h14l5 5v22h-19z' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M20.5 2.5v5h5' fill='%23c0c0c0' stroke='%23000'/%3E%3Cpath d='M9 10h10M9 13h13M9 16h8M9 19h12M9 22h9' stroke='%23808080'/%3E%3Cg%3E%3CanimateTransform attributeName='transform' type='translate' dur='1.6s' repeatCount='indefinite' values='0 0%3B6 3%3B0 7%3B-5 3%3B0 0'/%3E%3Ccircle cx='14' cy='13' r='5' fill='%23bfe3ff' fill-opacity='.75' stroke='%23000' stroke-width='2' shape-rendering='auto'/%3E%3Cpath d='M17.5 16.5l5 5' stroke='%23800000' stroke-width='3' shape-rendering='auto'/%3E%3C/g%3E%3C/svg%3E");
+  --w95-i-progress: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='16' viewBox='0 0 160 16' shape-rendering='crispEdges'%3E%3Cpath d='M0 15.5h160M159.5 0v16' stroke='%23fff'/%3E%3Cpath d='M0 .5h159M.5 0v15' stroke='%23808080'/%3E%3Crect x='1' y='1' width='158' height='14' fill='%23fff'/%3E%3CclipPath id='c'%3E%3Crect x='0' y='0' width='0' height='16'%3E%3Canimate attributeName='width' dur='3.2s' repeatCount='indefinite' calcMode='discrete' values='2%3B12%3B22%3B32%3B42%3B52%3B62%3B72%3B82%3B92%3B102%3B112%3B122%3B132%3B142%3B152%3B162'/%3E%3C/rect%3E%3C/clipPath%3E%3Cg clip-path='url%28%23c%29' fill='%23000080'%3E%3Crect x='3' y='3' width='8' height='10'/%3E%3Crect x='13' y='3' width='8' height='10'/%3E%3Crect x='23' y='3' width='8' height='10'/%3E%3Crect x='33' y='3' width='8' height='10'/%3E%3Crect x='43' y='3' width='8' height='10'/%3E%3Crect x='53' y='3' width='8' height='10'/%3E%3Crect x='63' y='3' width='8' height='10'/%3E%3Crect x='73' y='3' width='8' height='10'/%3E%3Crect x='83' y='3' width='8' height='10'/%3E%3Crect x='93' y='3' width='8' height='10'/%3E%3Crect x='103' y='3' width='8' height='10'/%3E%3Crect x='113' y='3' width='8' height='10'/%3E%3Crect x='123' y='3' width='8' height='10'/%3E%3Crect x='133' y='3' width='8' height='10'/%3E%3Crect x='143' y='3' width='8' height='10'/%3E%3Crect x='153' y='3' width='8' height='10'/%3E%3C/g%3E%3C/svg%3E");
+  /* Icons: 16px for menus and buttons (--w95-i-*), 32px per view for the
+     menu bar and the Start menu (--w95-v-*). Drawn after the Windows 95 set,
+     not copied from it. */
+  --w95-i-save: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='1.5' y='1.5' width='13' height='13' fill='%23000080' stroke='%23000'/%3E%3Crect x='4' y='2' width='8' height='5' fill='%23fff'/%3E%3Cpath d='M5 3.5h6M5 5.5h6' stroke='%23808080'/%3E%3Crect x='4' y='10' width='8' height='5' fill='%23c0c0c0'/%3E%3Crect x='9' y='11' width='2' height='3' fill='%23000080'/%3E%3C/svg%3E");
+  --w95-i-remove: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M3.5 4.5h9l-1 10h-7z' fill='%23c0c0c0' stroke='%23000'/%3E%3Cpath d='M2.5 2.5h11v2h-11z' fill='%23dfdfdf' stroke='%23000'/%3E%3Cpath d='M6.5 1.5h3v1h-3z' fill='%23808080' stroke='%23000'/%3E%3Cpath d='M6 6v7M8 6v7M10 6v7' stroke='%23808080'/%3E%3C/svg%3E");
+  --w95-i-share: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='1.5' y='3.5' width='13' height='9' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M2 4l6 5 6-5' fill='none' stroke='%23000' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-convert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M1 5h9' stroke='%23008000' stroke-width='2'/%3E%3Cpath d='M10 1.5l4.5 3.5-4.5 3.5z' fill='%23008000'/%3E%3Cpath d='M15 11.5H6' stroke='%23000080' stroke-width='2'/%3E%3Cpath d='M6 8l-4.5 3.5 4.5 3.5z' fill='%23000080'/%3E%3C/svg%3E");
+  --w95-i-download: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M6.5 .5h3v6h3l-4.5 5-4.5-5h3z' fill='%2300a000' stroke='%23000'/%3E%3Cpath d='M1.5 11.5v3h13v-3' fill='none' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-i-clock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Ccircle cx='8' cy='8' r='6.5' fill='%23fff' stroke='%23000' shape-rendering='auto'/%3E%3Cpath d='M8 3.5v4.5h3' fill='none' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-i-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M2 8l4 4 8-9' fill='none' stroke='%23008000' stroke-width='2.5' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-audio: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M2.5 .5h8l3 3v12h-11z' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M10.5 .5v3h3' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='4' y='10' width='3' height='3' fill='%23000'/%3E%3Cpath d='M6.5 5v6' stroke='%23000'/%3E%3Cpath d='M7 5h3v2H8' fill='%23000' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-i-wave: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M2.5 .5h8l3 3v12h-11z' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M10.5 .5v3h3' fill='%23c0c0c0' stroke='%23000'/%3E%3Cpath d='M3 9h1.5l1-3 1.5 6 1.5-6 1 4 1-2H12' fill='none' stroke='%23000080' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-cd: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Ccircle cx='8' cy='8' r='6.5' fill='%23dfdfdf' stroke='%23000' shape-rendering='auto'/%3E%3Cpath d='M3.5 6a5 5 0 0 1 4-3.5' fill='none' stroke='%2300c0c0' stroke-width='1.5' shape-rendering='auto'/%3E%3Cpath d='M12.5 10a5 5 0 0 1-4 3.5' fill='none' stroke='%23ff80ff' stroke-width='1.5' shape-rendering='auto'/%3E%3Ccircle cx='8' cy='8' r='1.8' fill='%23fff' stroke='%23808080' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-network: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M5 8v5h7v-2' fill='none' stroke='%23000'/%3E%3Crect x='.5' y='1.5' width='8' height='6' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='2' y='3' width='5' height='3' fill='%23008080'/%3E%3Crect x='7.5' y='5.5' width='8' height='6' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='9' y='7' width='5' height='3' fill='%23000080'/%3E%3C/svg%3E");
+  --w95-i-room: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M.5 1.5h10v6h-6l-3 3v-3h-1z' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M5.5 7.5h10v5h-1v3l-3-3h-6z' fill='%23ffff80' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-i-volumeHigh: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 5.5h3l4-3v11l-4-3h-3z' fill='%23808080' stroke='%23000'/%3E%3Cpath d='M11 5.5q1.8 2.5 0 5M13 3.5q3 4.5 0 9' fill='none' stroke='%23000' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-volumeLow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 5.5h3l4-3v11l-4-3h-3z' fill='%23808080' stroke='%23000'/%3E%3Cpath d='M11 5.5q1.8 2.5 0 5' fill='none' stroke='%23000' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-i-volumeOff: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 5.5h3l4-3v11l-4-3h-3z' fill='%23808080' stroke='%23000'/%3E%3Ccircle cx='11.5' cy='11' r='3.5' fill='%23fff' stroke='%23ff0000' stroke-width='1.5' shape-rendering='auto'/%3E%3Cpath d='M9 13.5l5-5' stroke='%23ff0000' stroke-width='1.5' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-v-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M5 2h13l5 5v21H5z' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M18 2v5h5' fill='%23c0c0c0' stroke='%23000'/%3E%3Cpath d='M8 9h8M8 12h11M8 15h6' stroke='%23808080'/%3E%3Ccircle cx='18' cy='19' r='5.5' fill='%23bfe3ff' stroke='%23000' stroke-width='2' shape-rendering='auto'/%3E%3Cpath d='M22 23l6 6' stroke='%23800000' stroke-width='3' shape-rendering='auto'/%3E%3C/svg%3E");
+  --w95-v-soulseek: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M8 16v10h16v-6' fill='none' stroke='%23000'/%3E%3Crect x='1.5' y='3.5' width='14' height='11' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='3.5' y='5.5' width='10' height='7' fill='%23008080'/%3E%3Crect x='5.5' y='14.5' width='6' height='2' fill='%23808080' stroke='%23000'/%3E%3Crect x='16.5' y='9.5' width='14' height='11' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='18.5' y='11.5' width='10' height='7' fill='%23000080'/%3E%3Crect x='20.5' y='20.5' width='6' height='2' fill='%23808080' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-v-downloads: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 8.5h10l2 3h17v17h-29z' fill='%23ffff80' stroke='%23808000'/%3E%3Cpath d='M2.5 12.5h27' stroke='%23fff'/%3E%3Cpath d='M13.5 13.5h5v7h4l-6.5 7-6.5-7h4z' fill='%2300a000' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-v-library: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 8.5h10l2 3h17v17h-29z' fill='%23ffff80' stroke='%23808000'/%3E%3Cpath d='M2.5 12.5h27' stroke='%23fff'/%3E%3Cpath d='M14 16h8v2h-6v7' fill='none' stroke='%23000' stroke-width='2'/%3E%3Cpath d='M20 18v5' stroke='%23000' stroke-width='2'/%3E%3Crect x='11' y='23' width='4' height='3' fill='%23000'/%3E%3Crect x='17' y='21' width='4' height='3' fill='%23000'/%3E%3C/svg%3E");
+  --w95-v-messages: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Crect x='2.5' y='7.5' width='27' height='18' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M3 8l13 10 13-10' fill='none' stroke='%23000' shape-rendering='auto'/%3E%3Cpath d='M3 25l10-8M29 25l-10-8' stroke='%23808080' shape-rendering='auto'/%3E%3Crect x='23' y='3' width='7' height='7' fill='%23ff0000' stroke='%23800000'/%3E%3C/svg%3E");
+  --w95-v-settings: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Crect x='3.5' y='3.5' width='25' height='18' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='6.5' y='6.5' width='19' height='12' fill='%23008080' stroke='%23808080'/%3E%3Cpath d='M9 10h8M9 13h12M9 16h6' stroke='%23fff'/%3E%3Crect x='11.5' y='21.5' width='9' height='3' fill='%23808080' stroke='%23000'/%3E%3Crect x='6.5' y='24.5' width='19' height='4' fill='%23c0c0c0' stroke='%23000'/%3E%3C/svg%3E");
+  --w95-v-admin: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='10' cy='16' r='6.5' fill='%23ffd700' stroke='%23000'/%3E%3Ccircle cx='8.5' cy='16' r='2' fill='%23008080' stroke='%23000'/%3E%3Cpath d='M16 14.5h14v3h-3v4h-3v-4h-2v3h-3v-3h-3z' fill='%23ffd700' stroke='%23000' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --w95-radio: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M4 0h4v1h-4zM2 1h2v1h-2zM8 1h2v1h-2zM1 2h1v1h-1zM1 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1z'/%3E%3Cpath fill='%23000' d='M4 1h4v1h-4zM2 2h2v1h-2zM8 2h2v1h-2zM2 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM2 8h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M4 2h4v1h-4zM10 2h1v1h-1zM3 3h6v1h-6zM10 3h1v1h-1zM2 4h8v1h-8zM11 4h1v1h-1zM2 5h8v1h-8zM11 5h1v1h-1zM2 6h8v1h-8zM11 6h1v1h-1zM2 7h8v1h-8zM11 7h1v1h-1zM3 8h6v1h-6zM10 8h1v1h-1zM4 9h4v1h-4zM10 9h1v1h-1zM2 10h2v1h-2zM8 10h2v1h-2zM4 11h4v1h-4z'/%3E%3Cpath fill='%23dfdfdf' d='M9 3h1v1h-1zM10 4h1v1h-1zM10 5h1v1h-1zM10 6h1v1h-1zM10 7h1v1h-1zM9 8h1v1h-1zM2 9h2v1h-2zM8 9h2v1h-2zM4 10h4v1h-4z'/%3E%3C/svg%3E");
+  --w95-radio-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M4 0h4v1h-4zM2 1h2v1h-2zM8 1h2v1h-2zM1 2h1v1h-1zM1 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1z'/%3E%3Cpath fill='%23000' d='M4 1h4v1h-4zM2 2h2v1h-2zM8 2h2v1h-2zM2 3h1v1h-1zM1 4h1v1h-1zM5 4h2v1h-2zM1 5h1v1h-1zM4 5h4v1h-4zM1 6h1v1h-1zM4 6h4v1h-4zM1 7h1v1h-1zM5 7h2v1h-2zM2 8h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M4 2h4v1h-4zM10 2h1v1h-1zM3 3h6v1h-6zM10 3h1v1h-1zM2 4h3v1h-3zM7 4h3v1h-3zM11 4h1v1h-1zM2 5h2v1h-2zM8 5h2v1h-2zM11 5h1v1h-1zM2 6h2v1h-2zM8 6h2v1h-2zM11 6h1v1h-1zM2 7h3v1h-3zM7 7h3v1h-3zM11 7h1v1h-1zM3 8h6v1h-6zM10 8h1v1h-1zM4 9h4v1h-4zM10 9h1v1h-1zM2 10h2v1h-2zM8 10h2v1h-2zM4 11h4v1h-4z'/%3E%3Cpath fill='%23dfdfdf' d='M9 3h1v1h-1zM10 4h1v1h-1zM10 5h1v1h-1zM10 6h1v1h-1zM10 7h1v1h-1zM9 8h1v1h-1zM2 9h2v1h-2zM8 9h2v1h-2zM4 10h4v1h-4z'/%3E%3C/svg%3E");
+  --w95-radio-off-grey: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M4 0h4v1h-4zM2 1h2v1h-2zM8 1h2v1h-2zM1 2h1v1h-1zM1 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1z'/%3E%3Cpath fill='%23000' d='M4 1h4v1h-4zM2 2h2v1h-2zM8 2h2v1h-2zM2 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM2 8h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M10 2h1v1h-1zM10 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM10 8h1v1h-1zM10 9h1v1h-1zM2 10h2v1h-2zM8 10h2v1h-2zM4 11h4v1h-4z'/%3E%3Cpath fill='%23dfdfdf' d='M9 3h1v1h-1zM10 4h1v1h-1zM10 5h1v1h-1zM10 6h1v1h-1zM10 7h1v1h-1zM9 8h1v1h-1zM2 9h2v1h-2zM8 9h2v1h-2zM4 10h4v1h-4z'/%3E%3C/svg%3E");
+  --w95-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h12v1h-12zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M12 0h1v1h-1zM12 1h1v1h-1zM2 2h9v1h-9zM12 2h1v1h-1zM2 3h9v1h-9zM12 3h1v1h-1zM2 4h9v1h-9zM12 4h1v1h-1zM2 5h9v1h-9zM12 5h1v1h-1zM2 6h9v1h-9zM12 6h1v1h-1zM2 7h9v1h-9zM12 7h1v1h-1zM2 8h9v1h-9zM12 8h1v1h-1zM2 9h9v1h-9zM12 9h1v1h-1zM2 10h9v1h-9zM12 10h1v1h-1zM12 11h1v1h-1zM0 12h13v1h-13z'/%3E%3Cpath fill='%23000' d='M1 1h10v1h-10zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1z'/%3E%3Cpath fill='%23dfdfdf' d='M11 1h1v1h-1zM11 2h1v1h-1zM11 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM11 8h1v1h-1zM11 9h1v1h-1zM11 10h1v1h-1zM1 11h11v1h-11z'/%3E%3C/svg%3E");
+  --w95-check-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h12v1h-12zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M12 0h1v1h-1zM12 1h1v1h-1zM2 2h9v1h-9zM12 2h1v1h-1zM2 3h7v1h-7zM10 3h1v1h-1zM12 3h1v1h-1zM2 4h6v1h-6zM10 4h1v1h-1zM12 4h1v1h-1zM2 5h1v1h-1zM4 5h3v1h-3zM10 5h1v1h-1zM12 5h1v1h-1zM2 6h1v1h-1zM5 6h1v1h-1zM9 6h2v1h-2zM12 6h1v1h-1zM2 7h1v1h-1zM8 7h3v1h-3zM12 7h1v1h-1zM2 8h2v1h-2zM7 8h4v1h-4zM12 8h1v1h-1zM2 9h3v1h-3zM6 9h5v1h-5zM12 9h1v1h-1zM2 10h9v1h-9zM12 10h1v1h-1zM12 11h1v1h-1zM0 12h13v1h-13z'/%3E%3Cpath fill='%23000' d='M1 1h10v1h-10zM1 2h1v1h-1zM1 3h1v1h-1zM9 3h1v1h-1zM1 4h1v1h-1zM8 4h2v1h-2zM1 5h1v1h-1zM3 5h1v1h-1zM7 5h3v1h-3zM1 6h1v1h-1zM3 6h2v1h-2zM6 6h3v1h-3zM1 7h1v1h-1zM3 7h5v1h-5zM1 8h1v1h-1zM4 8h3v1h-3zM1 9h1v1h-1zM5 9h1v1h-1zM1 10h1v1h-1z'/%3E%3Cpath fill='%23dfdfdf' d='M11 1h1v1h-1zM11 2h1v1h-1zM11 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM11 8h1v1h-1zM11 9h1v1h-1zM11 10h1v1h-1zM1 11h11v1h-11z'/%3E%3C/svg%3E");
+  --w95-check-mixed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h12v1h-12zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM9 3h1v1h-1zM0 4h1v1h-1zM8 4h2v1h-2zM0 5h1v1h-1zM3 5h1v1h-1zM7 5h3v1h-3zM0 6h1v1h-1zM3 6h2v1h-2zM6 6h3v1h-3zM0 7h1v1h-1zM3 7h5v1h-5zM0 8h1v1h-1zM4 8h3v1h-3zM0 9h1v1h-1zM5 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M12 0h1v1h-1zM12 1h1v1h-1zM12 2h1v1h-1zM12 3h1v1h-1zM12 4h1v1h-1zM12 5h1v1h-1zM12 6h1v1h-1zM12 7h1v1h-1zM12 8h1v1h-1zM12 9h1v1h-1zM12 10h1v1h-1zM12 11h1v1h-1zM0 12h13v1h-13z'/%3E%3Cpath fill='%23000' d='M1 1h10v1h-10zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1z'/%3E%3Cpath fill='%23dfdfdf' d='M11 1h1v1h-1zM11 2h1v1h-1zM11 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM11 8h1v1h-1zM11 9h1v1h-1zM11 10h1v1h-1zM1 11h11v1h-11z'/%3E%3C/svg%3E");
+  --w95-check-off-grey: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h12v1h-12zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M12 0h1v1h-1zM12 1h1v1h-1zM12 2h1v1h-1zM12 3h1v1h-1zM12 4h1v1h-1zM12 5h1v1h-1zM12 6h1v1h-1zM12 7h1v1h-1zM12 8h1v1h-1zM12 9h1v1h-1zM12 10h1v1h-1zM12 11h1v1h-1zM0 12h13v1h-13z'/%3E%3Cpath fill='%23000' d='M1 1h10v1h-10zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1z'/%3E%3Cpath fill='%23dfdfdf' d='M11 1h1v1h-1zM11 2h1v1h-1zM11 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM11 8h1v1h-1zM11 9h1v1h-1zM11 10h1v1h-1zM1 11h11v1h-11z'/%3E%3C/svg%3E");
+  --w95-sb-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23fff' d='M0 0h15v1h-15zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1zM0 12h1v1h-1zM0 13h1v1h-1zM0 14h1v1h-1z'/%3E%3Cpath fill='%23000' d='M15 0h1v1h-1zM15 1h1v1h-1zM15 2h1v1h-1zM15 3h1v1h-1zM15 4h1v1h-1zM15 5h1v1h-1zM7 6h1v1h-1zM15 6h1v1h-1zM6 7h3v1h-3zM15 7h1v1h-1zM5 8h5v1h-5zM15 8h1v1h-1zM4 9h7v1h-7zM15 9h1v1h-1zM15 10h1v1h-1zM15 11h1v1h-1zM15 12h1v1h-1zM15 13h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23dfdfdf' d='M1 1h13v1h-13zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1zM1 11h1v1h-1zM1 12h1v1h-1zM1 13h1v1h-1z'/%3E%3Cpath fill='%23808080' d='M14 1h1v1h-1zM14 2h1v1h-1zM14 3h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1zM14 9h1v1h-1zM14 10h1v1h-1zM14 11h1v1h-1zM14 12h1v1h-1zM14 13h1v1h-1zM1 14h14v1h-14z'/%3E%3C/svg%3E");
+  --w95-sb-up-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h16v1h-16zM0 1h1v1h-1zM15 1h1v1h-1zM0 2h1v1h-1zM15 2h1v1h-1zM0 3h1v1h-1zM15 3h1v1h-1zM0 4h1v1h-1zM15 4h1v1h-1zM0 5h1v1h-1zM15 5h1v1h-1zM0 6h1v1h-1zM15 6h1v1h-1zM0 7h1v1h-1zM15 7h1v1h-1zM0 8h1v1h-1zM15 8h1v1h-1zM0 9h1v1h-1zM15 9h1v1h-1zM0 10h1v1h-1zM15 10h1v1h-1zM0 11h1v1h-1zM15 11h1v1h-1zM0 12h1v1h-1zM15 12h1v1h-1zM0 13h1v1h-1zM15 13h1v1h-1zM0 14h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23000' d='M8 7h1v1h-1zM7 8h3v1h-3zM6 9h5v1h-5zM5 10h7v1h-7z'/%3E%3C/svg%3E");
+  --w95-sb-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23fff' d='M0 0h15v1h-15zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1zM0 12h1v1h-1zM0 13h1v1h-1zM0 14h1v1h-1z'/%3E%3Cpath fill='%23000' d='M15 0h1v1h-1zM15 1h1v1h-1zM15 2h1v1h-1zM15 3h1v1h-1zM15 4h1v1h-1zM15 5h1v1h-1zM4 6h7v1h-7zM15 6h1v1h-1zM5 7h5v1h-5zM15 7h1v1h-1zM6 8h3v1h-3zM15 8h1v1h-1zM7 9h1v1h-1zM15 9h1v1h-1zM15 10h1v1h-1zM15 11h1v1h-1zM15 12h1v1h-1zM15 13h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23dfdfdf' d='M1 1h13v1h-13zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1zM1 11h1v1h-1zM1 12h1v1h-1zM1 13h1v1h-1z'/%3E%3Cpath fill='%23808080' d='M14 1h1v1h-1zM14 2h1v1h-1zM14 3h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1zM14 9h1v1h-1zM14 10h1v1h-1zM14 11h1v1h-1zM14 12h1v1h-1zM14 13h1v1h-1zM1 14h14v1h-14z'/%3E%3C/svg%3E");
+  --w95-sb-down-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h16v1h-16zM0 1h1v1h-1zM15 1h1v1h-1zM0 2h1v1h-1zM15 2h1v1h-1zM0 3h1v1h-1zM15 3h1v1h-1zM0 4h1v1h-1zM15 4h1v1h-1zM0 5h1v1h-1zM15 5h1v1h-1zM0 6h1v1h-1zM15 6h1v1h-1zM0 7h1v1h-1zM15 7h1v1h-1zM0 8h1v1h-1zM15 8h1v1h-1zM0 9h1v1h-1zM15 9h1v1h-1zM0 10h1v1h-1zM15 10h1v1h-1zM0 11h1v1h-1zM15 11h1v1h-1zM0 12h1v1h-1zM15 12h1v1h-1zM0 13h1v1h-1zM15 13h1v1h-1zM0 14h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23000' d='M5 7h7v1h-7zM6 8h5v1h-5zM7 9h3v1h-3zM8 10h1v1h-1z'/%3E%3C/svg%3E");
+  --w95-sb-left: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23fff' d='M0 0h15v1h-15zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1zM0 12h1v1h-1zM0 13h1v1h-1zM0 14h1v1h-1z'/%3E%3Cpath fill='%23000' d='M15 0h1v1h-1zM15 1h1v1h-1zM15 2h1v1h-1zM15 3h1v1h-1zM9 4h1v1h-1zM15 4h1v1h-1zM8 5h2v1h-2zM15 5h1v1h-1zM7 6h3v1h-3zM15 6h1v1h-1zM6 7h4v1h-4zM15 7h1v1h-1zM7 8h3v1h-3zM15 8h1v1h-1zM8 9h2v1h-2zM15 9h1v1h-1zM9 10h1v1h-1zM15 10h1v1h-1zM15 11h1v1h-1zM15 12h1v1h-1zM15 13h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23dfdfdf' d='M1 1h13v1h-13zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1zM1 11h1v1h-1zM1 12h1v1h-1zM1 13h1v1h-1z'/%3E%3Cpath fill='%23808080' d='M14 1h1v1h-1zM14 2h1v1h-1zM14 3h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1zM14 9h1v1h-1zM14 10h1v1h-1zM14 11h1v1h-1zM14 12h1v1h-1zM14 13h1v1h-1zM1 14h14v1h-14z'/%3E%3C/svg%3E");
+  --w95-sb-left-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h16v1h-16zM0 1h1v1h-1zM15 1h1v1h-1zM0 2h1v1h-1zM15 2h1v1h-1zM0 3h1v1h-1zM15 3h1v1h-1zM0 4h1v1h-1zM15 4h1v1h-1zM0 5h1v1h-1zM15 5h1v1h-1zM0 6h1v1h-1zM15 6h1v1h-1zM0 7h1v1h-1zM15 7h1v1h-1zM0 8h1v1h-1zM15 8h1v1h-1zM0 9h1v1h-1zM15 9h1v1h-1zM0 10h1v1h-1zM15 10h1v1h-1zM0 11h1v1h-1zM15 11h1v1h-1zM0 12h1v1h-1zM15 12h1v1h-1zM0 13h1v1h-1zM15 13h1v1h-1zM0 14h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23000' d='M10 5h1v1h-1zM9 6h2v1h-2zM8 7h3v1h-3zM7 8h4v1h-4zM8 9h3v1h-3zM9 10h2v1h-2zM10 11h1v1h-1z'/%3E%3C/svg%3E");
+  --w95-sb-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23fff' d='M0 0h15v1h-15zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1zM0 12h1v1h-1zM0 13h1v1h-1zM0 14h1v1h-1z'/%3E%3Cpath fill='%23000' d='M15 0h1v1h-1zM15 1h1v1h-1zM15 2h1v1h-1zM15 3h1v1h-1zM6 4h1v1h-1zM15 4h1v1h-1zM6 5h2v1h-2zM15 5h1v1h-1zM6 6h3v1h-3zM15 6h1v1h-1zM6 7h4v1h-4zM15 7h1v1h-1zM6 8h3v1h-3zM15 8h1v1h-1zM6 9h2v1h-2zM15 9h1v1h-1zM6 10h1v1h-1zM15 10h1v1h-1zM15 11h1v1h-1zM15 12h1v1h-1zM15 13h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23dfdfdf' d='M1 1h13v1h-13zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1zM1 11h1v1h-1zM1 12h1v1h-1zM1 13h1v1h-1z'/%3E%3Cpath fill='%23808080' d='M14 1h1v1h-1zM14 2h1v1h-1zM14 3h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1zM14 9h1v1h-1zM14 10h1v1h-1zM14 11h1v1h-1zM14 12h1v1h-1zM14 13h1v1h-1zM1 14h14v1h-14z'/%3E%3C/svg%3E");
+  --w95-sb-right-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h16v1h-16zM0 1h1v1h-1zM15 1h1v1h-1zM0 2h1v1h-1zM15 2h1v1h-1zM0 3h1v1h-1zM15 3h1v1h-1zM0 4h1v1h-1zM15 4h1v1h-1zM0 5h1v1h-1zM15 5h1v1h-1zM0 6h1v1h-1zM15 6h1v1h-1zM0 7h1v1h-1zM15 7h1v1h-1zM0 8h1v1h-1zM15 8h1v1h-1zM0 9h1v1h-1zM15 9h1v1h-1zM0 10h1v1h-1zM15 10h1v1h-1zM0 11h1v1h-1zM15 11h1v1h-1zM0 12h1v1h-1zM15 12h1v1h-1zM0 13h1v1h-1zM15 13h1v1h-1zM0 14h1v1h-1zM15 14h1v1h-1zM0 15h16v1h-16z'/%3E%3Cpath fill='%23000' d='M7 5h1v1h-1zM7 6h2v1h-2zM7 7h3v1h-3zM7 8h4v1h-4zM7 9h3v1h-3zM7 10h2v1h-2zM7 11h1v1h-1z'/%3E%3C/svg%3E");
+  --w95-combo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='17' shape-rendering='crispEdges'%3E%3Cpath fill='%23fff' d='M0 0h15v1h-15zM0 1h1v1h-1zM0 2h1v1h-1zM0 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM0 8h1v1h-1zM0 9h1v1h-1zM0 10h1v1h-1zM0 11h1v1h-1zM0 12h1v1h-1zM0 13h1v1h-1zM0 14h1v1h-1zM0 15h1v1h-1z'/%3E%3Cpath fill='%23000' d='M15 0h1v1h-1zM15 1h1v1h-1zM15 2h1v1h-1zM15 3h1v1h-1zM15 4h1v1h-1zM15 5h1v1h-1zM15 6h1v1h-1zM4 7h7v1h-7zM15 7h1v1h-1zM5 8h5v1h-5zM15 8h1v1h-1zM6 9h3v1h-3zM15 9h1v1h-1zM7 10h1v1h-1zM15 10h1v1h-1zM15 11h1v1h-1zM15 12h1v1h-1zM15 13h1v1h-1zM15 14h1v1h-1zM15 15h1v1h-1zM0 16h16v1h-16z'/%3E%3Cpath fill='%23dfdfdf' d='M1 1h13v1h-13zM1 2h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1zM1 10h1v1h-1zM1 11h1v1h-1zM1 12h1v1h-1zM1 13h1v1h-1zM1 14h1v1h-1z'/%3E%3Cpath fill='%23808080' d='M14 1h1v1h-1zM14 2h1v1h-1zM14 3h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1zM14 9h1v1h-1zM14 10h1v1h-1zM14 11h1v1h-1zM14 12h1v1h-1zM14 13h1v1h-1zM14 14h1v1h-1zM1 15h14v1h-14z'/%3E%3C/svg%3E");
+  --w95-combo-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='17' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M0 0h16v1h-16zM0 1h1v1h-1zM15 1h1v1h-1zM0 2h1v1h-1zM15 2h1v1h-1zM0 3h1v1h-1zM15 3h1v1h-1zM0 4h1v1h-1zM15 4h1v1h-1zM0 5h1v1h-1zM15 5h1v1h-1zM0 6h1v1h-1zM15 6h1v1h-1zM0 7h1v1h-1zM15 7h1v1h-1zM0 8h1v1h-1zM15 8h1v1h-1zM0 9h1v1h-1zM15 9h1v1h-1zM0 10h1v1h-1zM15 10h1v1h-1zM0 11h1v1h-1zM15 11h1v1h-1zM0 12h1v1h-1zM15 12h1v1h-1zM0 13h1v1h-1zM15 13h1v1h-1zM0 14h1v1h-1zM15 14h1v1h-1zM0 15h1v1h-1zM15 15h1v1h-1zM0 16h16v1h-16z'/%3E%3Cpath fill='%23000' d='M5 8h7v1h-7zM6 9h5v1h-5zM7 10h3v1h-3zM8 11h1v1h-1z'/%3E%3C/svg%3E");
+  --w95-icon-error: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23ff0000' stroke='%23800000'/%3E%3Cpath d='M5 5l6 6M11 5l-6 6' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E");
+  --w95-icon-warn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.2L15 14.5H1z' fill='%23ffff00' stroke='%23000' stroke-linejoin='round'/%3E%3Cpath d='M8 5.5v5M8 12v1.5' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E");
+  --w95-icon-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M8 4v1.6M8 7v5' stroke='%230000ff' stroke-width='2'/%3E%3C/svg%3E");
+  --blaze-idle: url("data:image/png;base64,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");
+  --blaze-hot: url("data:image/png;base64,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");
+  --sniper-idle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23fff' stroke-width='3.5' stroke-opacity='.85'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3Cg stroke='%23000' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v10M16 21v10M1 16h10M21 16h10'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff0000' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, crosshair;
+  --sniper-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none'%3E%3Cg stroke='%23fff' stroke-width='3.5' stroke-opacity='.85'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v12M16 19v12M1 16h12M19 16h12'/%3E%3C/g%3E%3Cg stroke='%23ff0000' stroke-width='1.5'%3E%3Ccircle cx='16' cy='16' r='10'/%3E%3Cpath d='M16 1v12M16 19v12M1 16h12M19 16h12'/%3E%3C/g%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%23ff0000' stroke='%23000' stroke-width='.8'/%3E%3C/svg%3E") 16 16, pointer;
+  --slsk-hot: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='translate(1 1) scale(.0586)'%3E%3Cpath fill='%23000080' stroke='%23fff' stroke-width='24' stroke-linejoin='round' d='M288.6 186.8c-4.3 23.1 30.3 30.3 30.3 30.3s21.6 5.8 87.9-31.7 96.6-69.2 96.6-69.2l-10.1 23.1 15.9-1.4L499 158h13l-15.9 23 7.2 4.3-18.7 20.2 4.3 8.6s-28.8 36-62 60.5-49 43.2-115.3 80.7C278.5 403 158.8 499.6 158.8 499.6l4.3-23.1s-13 4.3-38.9 15.9c-1.4-11.5 7.2-21.6 7.2-21.6s-4.3 4.3-41.8 15.9c10.1-17.3 18.7-24.5 18.7-24.5s-18.7 4.3-38.9 10.1c1.4-20.2 44.7-37.5 44.7-37.5s-11.5 5.8-34.6 5.8c23.1-28.8 100.9-59.1 100.9-59.1s25.9-27.4 4.3-34.6-30.3 1.4-30.3 1.4-17.3-5.8-36-14.4-50.4-39-50.4-39L.2 214.2s-2.9-10.1 11.5-10.1C1.7 192.6.2 182.5.2 182.5L6 172.4v-15.9s-5.8-14.4 14.4-5.8c-13-7.2-8.6-23.1-11.5-43.2 10.1 30.3 54.8 66.3 54.8 66.3s4.3 7.2 51.9 27.4 103.8 15.9 103.8 15.9-1.4-1.4 2.9-14.4-15.9-10.1-20.2-37.5c7.2-38.9-40.4-57.7-40.4-57.7s10.1-7.2 21.6-5.8-23.1-13-17.3-15.9 20.2 5.8 20.2 5.8l-15.9-11.5s1.4-2.9 14.4-1.4c13 1.4-2.9-7.2-11.5-18.7 13-5.8 11.5 5.8 20.2 5.8-1.4-11.5-17.3-27.4-17.3-27.4s21.6 5.8 27.4 14.4c-2.9-13-17.3-40.4-17.3-40.4s31.7 7.2 47.6 23.1l64.9 64.9 37.5 69.2-25.9 5.8 11.5 28.8z'/%3E%3C/g%3E%3C/svg%3E") 12 2, pointer;
+  background: var(--w95-desktop);
+}
+
+/* Base: flat colours, no CRT. */
+:root[data-theme="win95"] body {
+  font-size: 12px; line-height: 1.4; letter-spacing: 0; text-transform: none; text-shadow: none;
+  -webkit-font-smoothing: auto;
+}
+:root[data-theme="win95"] body * { letter-spacing: 0; text-shadow: none; }
+:root[data-theme="win95"] body::after, :root[data-theme="win95"] .stars { display: none; }
+:root[data-theme="win95"] ::selection { background: var(--w95-select); color: #fff; }
+:root[data-theme="win95"] :focus-visible { outline: 1px dotted #000; outline-offset: 1px; }
+:root[data-theme="win95"] .dim, :root[data-theme="win95"] .note, :root[data-theme="win95"] .setting-note, :root[data-theme="win95"] .setting-note.dim, :root[data-theme="win95"] .empty { color: #000; }
+:root[data-theme="win95"] .eyebrow, :root[data-theme="win95"] .irc-time, :root[data-theme="win95"] .irc-event, :root[data-theme="win95"] .year-upload, :root[data-theme="win95"] .repost-tag, :root[data-theme="win95"] .converted, :root[data-theme="win95"] .spectrum { color: #808080; }
+:root[data-theme="win95"] ::placeholder, :root[data-theme="win95"] .ph-marquee { color: #808080; text-transform: none; }
+:root[data-theme="win95"] .art, :root[data-theme="win95"] .slsk-pic { filter: none; background: #808080; }
+:root[data-theme="win95"] .empty-title::after, :root[data-theme="win95"] .section-title::before, :root[data-theme="win95"] .section-title::after,
+:root[data-theme="win95"] .provider-tag::before, :root[data-theme="win95"] .provider-tag::after, :root[data-theme="win95"] .state::before, :root[data-theme="win95"] .state::after,
+:root[data-theme="win95"] .format-pill::before, :root[data-theme="win95"] .format-pill::after, :root[data-theme="win95"] .path::before { content: none; }
+:root[data-theme="win95"] .section-title { font-weight: bold; }
+:root[data-theme="win95"] .state.downloading, :root[data-theme="win95"] .state.resolving, :root[data-theme="win95"] .state.processing, :root[data-theme="win95"] .state.organizing,
+:root[data-theme="win95"] .slsk-conn.reconnecting, :root[data-theme="win95"] .slsk-conn.connecting, :root[data-theme="win95"] .blink, :root[data-theme="win95"] .skeleton::before,
+:root[data-theme="win95"] .progress.indeterminate::after { animation: none; }
+:root[data-theme="win95"] .state.failed { color: var(--danger); }
+
+/* Message lines get the 16px message-box icons instead of !! and **. */
+:root[data-theme="win95"] .error-line::before, :root[data-theme="win95"] .warn-line::before, :root[data-theme="win95"] .notice::before {
+  content: ""; display: inline-block; width: 16px; height: 16px; margin-right: 4px; vertical-align: -4px;
+  background: var(--w95-icon-error) no-repeat;
+}
+:root[data-theme="win95"] .warn-line::before, :root[data-theme="win95"] .notice::before { background-image: var(--w95-icon-warn); }
+:root[data-theme="win95"] .error-line { color: #000; }
+:root[data-theme="win95"] .warn-line, :root[data-theme="win95"] .notice { color: #000; }
+
+/* Windows: every box. The caption (.box-title) is a navy title bar. */
+:root[data-theme="win95"] .box {
+  background: var(--w95-face); border: 0; box-shadow: var(--w95-window); padding: 3px;
+}
+:root[data-theme="win95"] .box::before, :root[data-theme="win95"] .box::after { content: none; }
+:root[data-theme="win95"] .box-title {
+  background: var(--w95-title); color: #fff; font-weight: bold; text-align: left;
+  min-height: max(18px, 1.55em); padding: 2px 4px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Header window: caption, then the system values and status bar. */
+:root[data-theme="win95"] .head-box { padding: 3px; }
+:root[data-theme="win95"] .head-box > .box-title { padding: 2px 3px; border-bottom: 0; }
+:root[data-theme="win95"] .sysinfo { padding: 10px 9px; }
+:root[data-theme="win95"] .sysvars dt::after { content: ":"; }
+:root[data-theme="win95"] .statline { border-top: 0; padding: 2px 0 0; gap: 4px; }
+:root[data-theme="win95"] .statline > span:first-child { box-shadow: var(--w95-status); padding: 2px 6px; min-height: 20px; }
+:root[data-theme="win95"] .account { gap: 4px; }
+:root[data-theme="win95"] .logo, :root[data-theme="win95"] .logo.fire { font-family: var(--w95-mono); font-weight: 700; color: var(--w95-title); }
+/* The burning lettering's letter cells are solid blocks, so INKULT reads as
+   pixel letters; only the flames around them stay characters. */
+:root[data-theme="win95"] .logo .lt { background: currentColor; }
+:root[data-theme="win95"] .logo-box { padding: 6px 3px; }
+:root[data-theme="win95"] .motto { line-height: 1.4; }
+:root[data-theme="win95"] .kult, :root[data-theme="win95"] .kult.playing { filter: none; }
+
+/* Menu bar: flat items; the open view's item is pressed in, as an open
+   menu is. Keys are shown on the terminal themes only. */
+:root[data-theme="win95"] .menubar { justify-content: flex-start; gap: 0; padding: 2px; }
+:root[data-theme="win95"] .nav-item { color: #000; padding: 3px 8px; }
+:root[data-theme="win95"] .nav-item:hover { color: #000; }
+:root[data-theme="win95"] .nav-item .key { display: none; }
+:root[data-theme="win95"] .nav-item.active { background: none; color: #000; box-shadow: var(--w95-status); }
+/* Wide screens: the menu bar is a toolbar of big buttons, each view's icon
+   over its name, flat until pointed at (raised) or open (pressed in). */
+@media (min-width: 641px) and (min-height: 561px) {
+  :root[data-theme="win95"] .menubar { gap: 2px; }
+  :root[data-theme="win95"] .nav-item {
+    display: inline-flex; flex-direction: column; align-items: center; gap: 2px;
+    min-width: 72px; padding: 4px 8px 3px;
+  }
+  :root[data-theme="win95"] .nav-item::before { content: ""; width: 32px; height: 32px; background: var(--view-ico) no-repeat center / 32px 32px; }
+  :root[data-theme="win95"] .nav-item:hover:not(.active) { box-shadow: var(--w95-thin-raised); }
+  :root[data-theme="win95"] .nav-item.active { box-shadow: var(--w95-pressed); background: repeating-conic-gradient(#c0c0c0 0 25%, #fff 0 50%) 0 0 / 2px 2px; }
+}
+:root[data-theme="win95"] .nav-item:not(.active) .badge, :root[data-theme="win95"] .badge { color: var(--w95-title); }
+
+:root[data-theme="win95"] .banner {
+  border: 0; box-shadow: var(--w95-window); background: var(--w95-face); color: #000; padding: 10px 12px;
+}
+:root[data-theme="win95"] .banner::before {
+  content: ""; display: inline-block; width: 16px; height: 16px; margin-right: 8px; vertical-align: -4px;
+  background: var(--w95-icon-error) no-repeat;
+}
+
+/* Main window: the view's caption spans the top, the rest of a view header
+   wraps below it as a toolbar row, and the view gets the client padding. */
+:root[data-theme="win95"] .main { padding: 3px; }
+:root[data-theme="win95"] .main > .view { padding: 0 9px 9px; }
+:root[data-theme="win95"] .view > .box-title, :root[data-theme="win95"] .view-header > .box-title { margin: 0 -9px; }
+:root[data-theme="win95"] .view > .box-title { margin-bottom: 10px; }
+:root[data-theme="win95"] .view-header { justify-content: flex-start; gap: 8px 10px; margin-bottom: 10px; }
+:root[data-theme="win95"] .view-header > .box-title { flex: 0 0 calc(100% + 18px); text-align: left; }
+:root[data-theme="win95"] .dialog .box-title { white-space: normal; }
+:root[data-theme="win95"] .tagline { color: #fff; }
+
+/* Push buttons. No hover change (Windows 95 has none); pressed while held.
+   The primary button of a form is the default (Enter) button, with the
+   extra black frame. */
+/* No display here: other rules hide some buttons per screen size, and a
+   display set at this specificity would bring them back. A <button>
+   centres its label by itself; links get a matching line height. */
+:root[data-theme="win95"] .btn, :root[data-theme="win95"] .icon-btn {
+  background: var(--w95-face); color: #000; border: 0; border-radius: 0; box-shadow: var(--w95-raised);
+  text-decoration: none; text-align: center; white-space: nowrap; line-height: 1.2;
+}
+:root[data-theme="win95"] .btn { min-width: max(75px, 6.8em); min-height: max(23px, 1.95em); padding: 0 10px; }
+:root[data-theme="win95"] .icon-btn { min-width: max(23px, 1.95em); min-height: max(21px, 1.8em); padding: 0 5px; }
+:root[data-theme="win95"] a.btn { line-height: max(23px, 1.95em); }
+:root[data-theme="win95"] a.icon-btn { line-height: max(21px, 1.8em); }
+:root[data-theme="win95"] .icon-btn::before, :root[data-theme="win95"] .icon-btn::after { content: none; }
+:root[data-theme="win95"] .btn:hover:not(:disabled), :root[data-theme="win95"] .btn-primary:hover:not(:disabled), :root[data-theme="win95"] .icon-btn:hover:not(:disabled),
+:root[data-theme="win95"] .btn.danger:hover:not(:disabled), :root[data-theme="win95"] .icon-btn.danger:hover:not(:disabled) {
+  background: var(--w95-face); color: #000; box-shadow: var(--w95-raised);
+}
+:root[data-theme="win95"] .btn-primary, :root[data-theme="win95"] .btn-primary:hover:not(:disabled) { box-shadow: var(--w95-default); }
+/* Form buttons keep their size instead of spanning the form. */
+:root[data-theme="win95"] .form-grid > .btn { justify-self: start; }
+:root[data-theme="win95"] .gate .form-grid > .btn { justify-self: center; }
+:root[data-theme="win95"] .btn:active:not(:disabled), :root[data-theme="win95"] .icon-btn:active:not(:disabled),
+:root[data-theme="win95"] .btn.on, :root[data-theme="win95"] .btn.on:hover:not(:disabled) {
+  box-shadow: var(--w95-pressed); padding-top: 1px; padding-left: 11px; padding-right: 9px;
+}
+:root[data-theme="win95"] .icon-btn:active:not(:disabled) { padding-left: 6px; padding-right: 4px; }
+:root[data-theme="win95"] .btn-primary:active:not(:disabled) { box-shadow: var(--w95-default-pressed); }
+:root[data-theme="win95"] .btn:focus-visible, :root[data-theme="win95"] .icon-btn:focus-visible { outline: 1px dotted #000; outline-offset: -4px; }
+:root[data-theme="win95"] .btn.danger, :root[data-theme="win95"] .btn-primary, :root[data-theme="win95"] .icon-btn.primary, :root[data-theme="win95"] .icon-btn.danger:not(:disabled) { color: #000; }
+:root[data-theme="win95"] .btn:disabled, :root[data-theme="win95"] .icon-btn:disabled, :root[data-theme="win95"] .icon-btn.done {
+  color: #808080; text-shadow: 1px 1px 0 #fff; cursor: var(--cursor-idle);
+}
+
+/* Fields: white, sunken two pixels. */
+:root[data-theme="win95"] .field, :root[data-theme="win95"] .search-bar input, :root[data-theme="win95"] .filter, :root[data-theme="win95"] .format-select {
+  background: #fff; color: #000; caret-color: #000; border: 0; border-radius: 0; box-shadow: var(--w95-field);
+  padding: 3px 4px; min-height: max(21px, 1.8em); text-transform: none; outline: 0;
+}
+:root[data-theme="win95"] .field:focus { border: 0; }
+:root[data-theme="win95"] .search-bar, :root[data-theme="win95"] .filter-wrap, :root[data-theme="win95"] .irc-new .filter { border-bottom: 0; }
+:root[data-theme="win95"] .search-bar { gap: 6px; }
+:root[data-theme="win95"] .prompt { color: #000; }
+:root[data-theme="win95"] .ph-marquee { padding: 3px 4px; }
+:root[data-theme="win95"] .filter-wrap { gap: 6px; }
+:root[data-theme="win95"] .filter-grid > label:not(.check) { color: #000; }
+:root[data-theme="win95"] .filter-grid > label:not(.check)::after { content: ":"; }
+:root[data-theme="win95"] .list-foot { word-spacing: normal; }
+:root[data-theme="win95"] input[type="search"]::-webkit-search-cancel-button { background: #000; }
+/* Drop-down list: the field with its arrow button inside the right edge. */
+:root[data-theme="win95"] .format-select {
+  -webkit-appearance: none; appearance: none; padding-right: 22px; max-width: 100%;
+  background: var(--w95-combo) right 2px top 2px no-repeat, #fff;
+}
+:root[data-theme="win95"] .format-select:active { background-image: var(--w95-combo-down); }
+:root[data-theme="win95"] .format-select:focus-visible { outline: 1px dotted #000; outline-offset: -4px; }
+
+/* Option buttons and check boxes. */
+:root[data-theme="win95"] .chip { display: inline-flex; align-items: center; gap: 5px; color: #000; }
+:root[data-theme="win95"] .chip::before { content: ""; flex: none; width: 12px; height: 12px; background: var(--w95-radio) no-repeat; }
+:root[data-theme="win95"] .chip.active::before { content: ""; background-image: var(--w95-radio-on); }
+:root[data-theme="win95"] .chip:hover, :root[data-theme="win95"] .chip.active { color: #000; }
+:root[data-theme="win95"] .filters-toggle, :root[data-theme="win95"] .filters-toggle.on, :root[data-theme="win95"] .reposts-toggle.on { color: #000; }
+:root[data-theme="win95"] .check { gap: 5px; color: #000; align-items: center; }
+:root[data-theme="win95"] .check input {
+  -webkit-appearance: none; appearance: none; width: 13px; height: 13px; margin: 0; border: 0;
+  background: var(--w95-check) no-repeat; cursor: var(--cursor-hot);
+}
+:root[data-theme="win95"] .check input:checked { background-image: var(--w95-check-on); }
+:root[data-theme="win95"] .check input:focus-visible { outline: 1px dotted #000; outline-offset: 1px; }
+:root[data-theme="win95"] .pick { color: #000; display: inline-flex; align-items: center; justify-content: center; }
+:root[data-theme="win95"] .pick::before, :root[data-theme="win95"] .pick[aria-checked="true"]::before {
+  content: ""; width: 13px; height: 13px; background: var(--w95-check) no-repeat;
+}
+:root[data-theme="win95"] .pick[aria-checked="true"]::before { background-image: var(--w95-check-on); }
+:root[data-theme="win95"] .pick[aria-checked="mixed"]::before { content: ""; background: var(--w95-check-mixed) no-repeat, #c0c0c0; }
+:root[data-theme="win95"] .pick:disabled::before { background: var(--w95-check-off-grey) no-repeat, #c0c0c0; }
+
+/* Track bar (volume). */
+:root[data-theme="win95"] .slider { height: 24px; }
+:root[data-theme="win95"] .slider::-webkit-slider-runnable-track {
+  height: 4px; border: 0; background: #c0c0c0;
+  box-shadow: inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #000;
+}
+:root[data-theme="win95"] .slider::-moz-range-track {
+  height: 4px; border: 0; background: #c0c0c0;
+  box-shadow: inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #000;
+}
+:root[data-theme="win95"] .slider::-moz-range-progress { background: transparent; }
+:root[data-theme="win95"] .slider::-webkit-slider-thumb {
+  width: 11px; height: 21px; margin-top: -9px; background: var(--w95-face); box-shadow: var(--w95-raised);
+}
+:root[data-theme="win95"] .slider::-moz-range-thumb { width: 11px; height: 21px; background: var(--w95-face); box-shadow: var(--w95-raised); }
+:root[data-theme="win95"] .slider:disabled { opacity: 1; }
+:root[data-theme="win95"] .slider:disabled::-webkit-slider-thumb { background: repeating-conic-gradient(#c0c0c0 0 25%, #fff 0 50%) 0 0 / 2px 2px; }
+
+/* Scrollbars: 16px, arrow buttons at both ends, a dithered track and a
+   raised thumb (Chromium and Safari; Firefox only takes the colours).
+   These say html, not :root: Chromium stops matching the button states
+   (:start:decrement, ...) under a :root ancestor. */
+html[data-theme="win95"] ::-webkit-scrollbar { width: 16px; height: 16px; }
+html[data-theme="win95"] ::-webkit-scrollbar-track, html[data-theme="win95"] ::-webkit-scrollbar-track:horizontal {
+  background: repeating-conic-gradient(#c0c0c0 0 25%, #fff 0 50%) 0 0 / 2px 2px; border: 0;
+}
+/* Scrollbar parts take no box-shadow, so the thumb's bevel is a border
+   (outer ring) plus one-pixel gradient lines (inner ring). */
+html[data-theme="win95"] ::-webkit-scrollbar-thumb, html[data-theme="win95"] ::-webkit-scrollbar-thumb:hover, html[data-theme="win95"] ::-webkit-scrollbar-thumb:active {
+  border: 1px solid; border-color: #dfdfdf #000 #000 #dfdfdf; box-shadow: none;
+  background:
+    linear-gradient(#fff, #fff) left top / 100% 1px no-repeat,
+    linear-gradient(#fff, #fff) left top / 1px 100% no-repeat,
+    linear-gradient(#808080, #808080) left bottom / 100% 1px no-repeat,
+    linear-gradient(#808080, #808080) right top / 1px 100% no-repeat,
+    var(--w95-face);
+}
+html[data-theme="win95"] ::-webkit-scrollbar-corner { display: block; background: var(--w95-face); }
+/* One arrow button at each end. Chromium gives the bar buttons only when
+   the plain button style shows them, so the unwanted second pair (an
+   up/down at the same end) is the part hidden. */
+html[data-theme="win95"] ::-webkit-scrollbar-button {
+  display: block; width: 16px; height: 16px; background-color: var(--w95-face); background-repeat: no-repeat;
+}
+html[data-theme="win95"] ::-webkit-scrollbar-button:vertical:start:increment, html[data-theme="win95"] ::-webkit-scrollbar-button:vertical:end:decrement,
+html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:start:increment, html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:decrement {
+  display: none;
+}
+html[data-theme="win95"] ::-webkit-scrollbar-button:vertical:start:decrement { background-image: var(--w95-sb-up); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:vertical:end:increment { background-image: var(--w95-sb-down); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:start:decrement { background-image: var(--w95-sb-left); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment { background-image: var(--w95-sb-right); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:vertical:start:decrement:active { background-image: var(--w95-sb-up-down); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:vertical:end:increment:active { background-image: var(--w95-sb-down-down); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:start:decrement:active { background-image: var(--w95-sb-left-down); }
+html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment:active { background-image: var(--w95-sb-right-down); }
+@supports not selector(::-webkit-scrollbar) {
+  :root[data-theme="win95"] * { scrollbar-width: auto; scrollbar-color: #c0c0c0 #dfdfdf; }
+}
+
+/* Lists: white details views with raised column headers. A header cell
+   reaches half the column gap either side, so the headers touch while
+   their text stays over the column. */
+:root[data-theme="win95"] .tracks, :root[data-theme="win95"] .lib-list, :root[data-theme="win95"] .crew-list { background: #fff; box-shadow: var(--w95-field); padding: 2px; }
+:root[data-theme="win95"] .list-head { color: #000; border-bottom: 0; margin-bottom: 2px; padding-top: 0; padding-bottom: 0; }
+:root[data-theme="win95"] .list-head > * {
+  align-self: stretch; margin: 0 -7px; padding: 2px 7px; min-height: 17px; min-width: 0;
+  background: var(--w95-face); box-shadow: var(--w95-raised); overflow: hidden; white-space: nowrap;
+}
+:root[data-theme="win95"] .tracks > .list-head > :first-child, :root[data-theme="win95"] .lib-list > .list-head > :first-child, :root[data-theme="win95"] .crew-list > .list-head > :first-child { margin-left: -6px; }
+:root[data-theme="win95"] .tracks > .list-head > :last-child, :root[data-theme="win95"] .lib-list > .list-head > :last-child, :root[data-theme="win95"] .crew-list > .list-head > :last-child { margin-right: -6px; }
+:root[data-theme="win95"] .track:hover, :root[data-theme="win95"] .lib-row:hover, :root[data-theme="win95"] .slsk-file:hover, :root[data-theme="win95"] .slsk-dir:hover { background: none; }
+:root[data-theme="win95"] .lib-row.selected { background: none; }
+:root[data-theme="win95"] .lib-row.selected .title { background: var(--w95-select); color: #fff; }
+:root[data-theme="win95"] .track:has(.art-play.current) .title, :root[data-theme="win95"] .lib-row:has(.art-play.current) .title,
+:root[data-theme="win95"] .job:has(.art-play.current) .title { background: var(--w95-select); color: #fff; }
+/* Play on a cover: a small push button in the middle of the picture
+   rather than a tinted veil; an hourglass while the track loads. */
+:root[data-theme="win95"] .art-play-icon, :root[data-theme="win95"] .art-play:hover .art-play-icon { background: none; }
+:root[data-theme="win95"] .art-play-icon > [data-glyph] {
+  width: 22px; height: 20px; font-size: 0; background: var(--w95-face) var(--ico) no-repeat center;
+  box-shadow: var(--w95-raised);
+}
+:root[data-theme="win95"] .art-play:active .art-play-icon > [data-glyph] { box-shadow: var(--w95-pressed); background-position: calc(50% + 1px) calc(50% + 1px); }
+:root[data-theme="win95"] .art-play.loading .art-play-icon { animation: none; }
+:root[data-theme="win95"] .art.lg + .art-play-icon > [data-glyph], :root[data-theme="win95"] .collection-head .art-play-icon > [data-glyph] { width: 28px; height: 26px; }
+:root[data-theme="win95"] [data-glyph="play"] { --ico: var(--w95-i-play); }
+:root[data-theme="win95"] [data-glyph="pause"] { --ico: var(--w95-i-pause); }
+:root[data-theme="win95"] .art-play.loading [data-glyph] { --ico: var(--w95-i-busy); }
+:root[data-theme="win95"] .title, :root[data-theme="win95"] .subtitle, :root[data-theme="win95"] .album, :root[data-theme="win95"] .quality-cell, :root[data-theme="win95"] .added-cell, :root[data-theme="win95"] .provider-tag, :root[data-theme="win95"] .owners { color: #000; }
+:root[data-theme="win95"] .owners { color: #808080; }
+:root[data-theme="win95"] .crew-row { border-bottom: 0; }
+
+/* Etched separators where the terminal themes draw dashed rules. */
+:root[data-theme="win95"] .job, :root[data-theme="win95"] .setting, :root[data-theme="win95"] .slsk-group, :root[data-theme="win95"] .crew-form, :root[data-theme="win95"] .slsk-tabs, :root[data-theme="win95"] .irc-head, :root[data-theme="win95"] .slsk-log, :root[data-theme="win95"] .irc-log {
+  border-bottom-style: solid; border-bottom-color: #808080;
+}
+:root[data-theme="win95"] .job, :root[data-theme="win95"] .slsk-group, :root[data-theme="win95"] .crew-form { box-shadow: 0 1px #fff; }
+:root[data-theme="win95"] .job:last-child, :root[data-theme="win95"] .slsk-group:last-of-type { box-shadow: none; }
+:root[data-theme="win95"] .admin-heading { color: #000; font-weight: bold; }
+:root[data-theme="win95"] .admin-heading ~ .admin-heading { border-top: 1px solid #808080; box-shadow: inset 0 1px #fff; }
+:root[data-theme="win95"] .menu-item.menu-extra, :root[data-theme="win95"] .irc-new-heading { border-top: 1px solid #808080; box-shadow: inset 0 1px #fff; }
+
+/* Settings: each one is a group box, its label set into the etched frame. */
+:root[data-theme="win95"] .setting, :root[data-theme="win95"] .setting:last-child {
+  border: 1px solid #808080; box-shadow: inset 1px 1px #fff, 1px 1px #fff;
+  padding: 12px 10px 8px; margin: 16px 0 6px;
+}
+:root[data-theme="win95"] .setting-label, :root[data-theme="win95"] .rule-form .setting-label {
+  display: table; margin: calc(-12.5px - .7em) 0 6px -4px; padding: 0 3px; background: var(--w95-face); color: #000;
+}
+:root[data-theme="win95"] .setting-options { margin: 6px 0; }
+:root[data-theme="win95"] .search-filters, :root[data-theme="win95"] .collection-head {
+  border: 1px solid #808080; box-shadow: inset 1px 1px #fff, 1px 1px #fff;
+}
+:root[data-theme="win95"] .collection-head .coll-title { color: #000; }
+:root[data-theme="win95"] .twofa-key, :root[data-theme="win95"] .twofa-codes { background: #fff; color: #000; border: 0; box-shadow: var(--w95-field); }
+:root[data-theme="win95"] .rank.captain { color: var(--w95-title); }
+
+/* Progress bars: a sunken well filled with navy blocks. */
+:root[data-theme="win95"] .progress { display: flex; align-items: center; gap: 6px; white-space: pre; color: #000; }
+:root[data-theme="win95"] .progress-bar {
+  flex: 0 1 220px; min-width: 60px; height: 16px; padding: 2px; overflow: hidden;
+  color: transparent; font-size: 0; box-shadow: var(--w95-status);
+  background:
+    linear-gradient(90deg, transparent calc(var(--fraction, 0) * 100%), #fff 0) content-box,
+    repeating-linear-gradient(90deg, #000080 0 8px, #fff 8px 10px) content-box,
+    #fff;
+}
+:root[data-theme="win95"] .progress.indeterminate .progress-bar { display: none; }
+:root[data-theme="win95"] .progress.indeterminate { color: #000; white-space: normal; gap: 0; }
+
+/* Pop-up menus. */
+:root[data-theme="win95"] .format-menu {
+  background: var(--w95-face); border: 0; padding: 3px; box-shadow: var(--w95-window), 2px 2px 0 rgb(0 0 0 / .35);
+}
+:root[data-theme="win95"] .menu-title {
+  color: #000; font-weight: bold; padding: 3px 6px 4px 22px; margin-bottom: 2px;
+  border-bottom: 1px solid #808080; box-shadow: 0 1px #fff;
+}
+:root[data-theme="win95"] .menu-item { padding: 3px 8px 3px 22px; color: #000; position: relative; }
+:root[data-theme="win95"] .menu-item:hover, :root[data-theme="win95"] .menu-item:focus-visible { background: var(--w95-select); outline: none; }
+:root[data-theme="win95"] .menu-item:hover :is(.menu-label, .menu-detail), :root[data-theme="win95"] .menu-item:focus-visible :is(.menu-label, .menu-detail) { color: #fff; }
+:root[data-theme="win95"] .menu-label { color: #000; position: relative; }
+:root[data-theme="win95"] .menu-detail { color: #000; padding-left: 0; }
+:root[data-theme="win95"] .menu-label::before, :root[data-theme="win95"] .format-menu.plain .menu-label::before, :root[data-theme="win95"] .format-menu.plain .menu-item.disabled .menu-label::before { content: none; }
+:root[data-theme="win95"] .menu-item.disabled:hover { background: none; }
+:root[data-theme="win95"] .menu-item.disabled .menu-label, :root[data-theme="win95"] .menu-item.disabled .menu-detail,
+:root[data-theme="win95"] .menu-item.disabled:hover .menu-label, :root[data-theme="win95"] .menu-item.disabled:hover .menu-detail { color: #808080; text-shadow: 1px 1px 0 #fff; }
+:root[data-theme="win95"] .format-menu.sheet {
+  border: 0; box-shadow: var(--w95-window);
+  padding: 3px calc(3px + var(--safe-r)) calc(3px + var(--safe-b)) calc(3px + var(--safe-l));
+}
+:root[data-theme="win95"] .format-menu.sheet .menu-item { padding: 12px 8px 12px 22px; }
+
+/* Dialogs: a window with its caption, OK before Cancel at the bottom right. */
+:root[data-theme="win95"] .dialog {
+  background: var(--w95-face); color: #000; border: 0; padding: 3px 3px 12px;
+  box-shadow: var(--w95-window), 2px 2px 0 rgb(0 0 0 / .35);
+}
+:root[data-theme="win95"] .dialog::backdrop { background: transparent; }
+:root[data-theme="win95"] .dialog > form { padding: 0 9px; }
+:root[data-theme="win95"] .dialog .box-title { margin: 0 -9px 2px; }
+:root[data-theme="win95"] .dialog p:not(.error-line) { color: #000; }
+:root[data-theme="win95"] .dialog-actions { flex-direction: row-reverse; justify-content: flex-start; gap: 6px; }
+
+/* Sign-in window. */
+:root[data-theme="win95"] .gate-box { padding: 3px 3px 16px; }
+:root[data-theme="win95"] .gate-box > .box-title { border-bottom: 0; padding: 2px 3px; }
+:root[data-theme="win95"] .gate-intro { color: #000; }
+:root[data-theme="win95"] .gate .form-grid { padding: 0 12px; }
+
+/* Tooltip-style notices. */
+:root[data-theme="win95"] .toast, :root[data-theme="win95"] .wave-tip {
+  background: var(--w95-tip); color: #000; border: 1px solid #000; box-shadow: none;
+}
+:root[data-theme="win95"] .toast { padding: 4px 8px; }
+:root[data-theme="win95"] .toast::before { content: none; }
+:root[data-theme="win95"] .toast.error { color: #000; border-color: #000; box-shadow: none; }
+:root[data-theme="win95"] .toast.error::before {
+  content: ""; display: inline-block; width: 16px; height: 16px; margin-right: 6px; vertical-align: -4px;
+  background: var(--w95-icon-error) no-repeat;
+}
+
+:root[data-theme="win95"] .lib-bulk, :root[data-theme="win95"] .lib-bulk.active { background: var(--w95-face); border: 0; box-shadow: var(--w95-window); padding: 5px 6px; }
+
+/* Soulseek: the panes are the pages of a tab control. */
+:root[data-theme="win95"] .slsk-tabs { gap: 0; padding: 2px 0 0 2px; margin-bottom: 0; border-bottom: 0; }
+:root[data-theme="win95"] .slsk-tabs > .chip {
+  position: relative; padding: 3px 8px 2px; margin-right: -1px; background: var(--w95-face);
+  border-radius: 3px 3px 0 0; box-shadow: inset 1px 1px #fff, inset -1px 0 #000, inset -2px 0 #808080, inset 2px 2px #dfdfdf;
+}
+:root[data-theme="win95"] .slsk-tabs > .chip::before { content: none; }
+:root[data-theme="win95"] .slsk-tabs > .chip.active { z-index: 1; margin: -2px -3px -1px -2px; padding: 4px 10px 4px; }
+:root[data-theme="win95"] .slsk-pane { box-shadow: var(--w95-window); padding: 10px 9px; }
+:root[data-theme="win95"] .slsk-group { border-bottom-width: 1px; }
+:root[data-theme="win95"] .slsk-file .title { color: #000; }
+:root[data-theme="win95"] .slsk-name, :root[data-theme="win95"] .slsk-free { color: #000; }
+:root[data-theme="win95"] .slsk-busy { color: #808080; }
+:root[data-theme="win95"] .slsk-art { border: 0; box-shadow: var(--w95-status); color: #000; }
+:root[data-theme="win95"] .slsk-dir.open { background: none; }
+:root[data-theme="win95"] .slsk-dir.open .slsk-dir-name { background: var(--w95-select); color: #fff; }
+:root[data-theme="win95"] .slsk-dir-name, :root[data-theme="win95"] .slsk-dir-name:hover { color: #000; }
+:root[data-theme="win95"] .slsk-dir-files { border-left: 1px dotted #808080; }
+:root[data-theme="win95"] .slsk-convos { border-right: 1px solid #808080; box-shadow: 1px 0 #fff; }
+:root[data-theme="win95"] .slsk-convo-item { color: #000; }
+:root[data-theme="win95"] .slsk-convo-item:hover { background: none; }
+:root[data-theme="win95"] .slsk-convo-item.active { background: var(--w95-select); }
+:root[data-theme="win95"] .slsk-convo-item.active, :root[data-theme="win95"] .slsk-convo-item.active * { color: #fff; }
+:root[data-theme="win95"] .slsk-conn.online { color: #000; }
+:root[data-theme="win95"] .slsk-msg-from, :root[data-theme="win95"] .slsk-msg.me .slsk-msg-from { color: #000; font-weight: bold; }
+
+/* Chat: the log and lists are white wells. */
+:root[data-theme="win95"] .slsk-log, :root[data-theme="win95"] .irc-log { background: #fff; border-bottom: 0; box-shadow: var(--w95-field); padding: 4px 6px; }
+:root[data-theme="win95"] .irc-rooms { border-right: 0; }
+:root[data-theme="win95"] .irc-users { border-left: 0; }
+:root[data-theme="win95"] .irc-room-list, :root[data-theme="win95"] .irc-user-list { background: #fff; box-shadow: var(--w95-field); padding: 2px; min-height: 40px; }
+:root[data-theme="win95"] .irc-heading { color: #000; }
+:root[data-theme="win95"] .irc-room, :root[data-theme="win95"] .irc-user { color: #000; }
+:root[data-theme="win95"] .irc-room:hover { background: none; }
+:root[data-theme="win95"] .irc-room.active { background: var(--w95-select); }
+:root[data-theme="win95"] .irc-room.active, :root[data-theme="win95"] .irc-room.active * { color: #fff; }
+:root[data-theme="win95"] .irc-user:hover { color: #000; text-decoration: underline; }
+:root[data-theme="win95"] .irc-head { border-bottom: 0; }
+:root[data-theme="win95"] .irc-room-title { color: #000; font-weight: bold; }
+:root[data-theme="win95"] .irc-nick, :root[data-theme="win95"] .irc-line.me .irc-nick, :root[data-theme="win95"] .irc-action { color: #000; }
+:root[data-theme="win95"] .irc-nick { font-weight: bold; }
+:root[data-theme="win95"] .irc-line.mention { background: var(--w95-tip); }
+:root[data-theme="win95"] .irc-line.mention .irc-text { color: #000; }
+:root[data-theme="win95"] .irc-track { border: 1px solid #808080; background: #fff; }
+
+/* Player: the taskbar, its time and volume in sunken tray panels. */
+:root[data-theme="win95"] .player { background: var(--w95-face); border-top: 0; box-shadow: inset 0 1px #dfdfdf, inset 0 2px #fff; }
+:root[data-theme="win95"] .np-label, :root[data-theme="win95"] .np-source { color: #000; }
+:root[data-theme="win95"] .np .title, :root[data-theme="win95"] .np .subtitle { color: #000; }
+:root[data-theme="win95"] .np .title { font-weight: bold; }
+:root[data-theme="win95"] .play-toggle { background: var(--w95-face); color: #000; border: 0; box-shadow: var(--w95-raised); }
+:root[data-theme="win95"] .play-toggle:hover:not(:disabled) { background: var(--w95-face); color: #000; }
+:root[data-theme="win95"] .play-toggle:active:not(:disabled) { box-shadow: var(--w95-pressed); }
+:root[data-theme="win95"] .play-toggle:active:not(:disabled) .pt-icon { transform: translate(1px, 1px); }
+:root[data-theme="win95"] .play-toggle:focus-visible { outline: 1px dotted #000; outline-offset: -4px; }
+:root[data-theme="win95"] .pt-icon { filter: none; }
+:root[data-theme="win95"] .play-toggle:disabled { color: #808080; }
+:root[data-theme="win95"] .play-toggle:disabled .pt-icon { filter: drop-shadow(1px 1px 0 #fff); }
+:root[data-theme="win95"] .play-toggle.loading { animation: none; }
+:root[data-theme="win95"] .wave { background: #fff; box-shadow: var(--w95-field); padding: 2px; }
+:root[data-theme="win95"] .wave:focus-visible { outline: 1px dotted #000; outline-offset: 2px; }
+:root[data-theme="win95"] .wave-tip { padding: 1px 4px; }
+:root[data-theme="win95"] .time { color: #000; box-shadow: var(--w95-status); padding: 2px 4px; }
+:root[data-theme="win95"] .volume { justify-self: end; box-shadow: var(--w95-status); padding: 2px 4px 2px 6px; gap: 8px; }
+:root[data-theme="win95"] .tray-clock { display: inline; padding: 0 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The fold button is a title-bar button: minimize, and maximize to bring
+   the folded player back. */
+:root[data-theme="win95"] .player-fold { padding: 0; min-width: 18px; min-height: 16px; line-height: 0; }
+:root[data-theme="win95"] .player-fold > span {
+  display: inline-block; width: 16px; height: 14px; font-size: 0;
+  background: var(--w95-i-minimize) no-repeat center;
+}
+:root[data-theme="win95"] .player-fold[aria-expanded="false"] > span { background-image: var(--w95-i-maximize); }
+:root[data-theme="win95"] .player.folded .player-fold { min-width: 22px; min-height: 20px; }
+:root[data-theme="win95"] .player.folded { border: 0; box-shadow: var(--w95-window), 2px 2px 0 rgb(0 0 0 / .35); padding: 5px 5px 5px 10px; }
+
+@media (pointer: coarse) {
+  :root[data-theme="win95"] .btn, :root[data-theme="win95"] .icon-btn, :root[data-theme="win95"] .play-toggle { min-height: 44px; }
+  :root[data-theme="win95"] .icon-btn { min-width: 44px; }
+  :root[data-theme="win95"] .player-fold { min-height: 30px; }
+  :root[data-theme="win95"] .slider { height: 32px; }
+  :root[data-theme="win95"] .slider::-webkit-slider-thumb { width: 16px; height: 28px; margin-top: -12px; }
+  :root[data-theme="win95"] .slider::-moz-range-thumb { width: 16px; height: 28px; }
+}
+/* Big monitors use "Large fonts", as Windows did at higher resolutions;
+   controls are sized in em, so they grow with the text. */
+@media (min-width: 1600px) {
+  :root[data-theme="win95"] { --logo-max: 16px; }
+  :root[data-theme="win95"] body { font-size: 13px; }
+}
+@media (min-width: 2400px) {
+  :root[data-theme="win95"] { --logo-max: 20px; }
+  :root[data-theme="win95"] body { font-size: 15px; }
+}
+
+/* Compact screens: the app runs maximized. The top bar is the caption, the
+   drawer is the Start menu, and the content sits straight on the window
+   face rather than in a framed window on the desktop. */
+@media (max-width: 640px), (max-height: 560px) {
+  :root[data-theme="win95"] { background: var(--w95-face); }
+  :root[data-theme="win95"] body { font-size: 13px; line-height: 1.45; }
+  :root[data-theme="win95"] .main { padding: 0; box-shadow: none; background: none; }
+  :root[data-theme="win95"] .main > .view { padding: 0; }
+  :root[data-theme="win95"] .tagline { color: #808080; }
+  :root[data-theme="win95"] .appbar {
+    background: var(--w95-title); color: #fff; border-bottom: 0;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  :root[data-theme="win95"] .appbar-title { color: #fff; font-weight: bold; }
+  :root[data-theme="win95"] .appbar-menu {
+    background: var(--w95-face); color: #000; box-shadow: var(--w95-raised); font-size: 1.4em;
+    min-width: 40px; min-height: 36px;
+  }
+  :root[data-theme="win95"] .appbar-menu:active { background: var(--w95-face); color: #000; box-shadow: var(--w95-pressed); }
+  :root[data-theme="win95"] .appbar .kult, :root[data-theme="win95"] .appbar .kult.playing { color: #fff; }
+  :root[data-theme="win95"] .appbar .appbar-rooms { min-width: 0; }
+  :root[data-theme="win95"] .scrim { background: transparent; }
+  :root[data-theme="win95"] .drawer, :root[data-theme="win95"] body.chat-mode .irc-side {
+    background: var(--w95-face); border: 0; box-shadow: var(--w95-window), 2px 0 0 rgb(0 0 0 / .35);
+  }
+  /* The Start menu's banner down the left edge. */
+  :root[data-theme="win95"] .drawer {
+    padding-left: calc(34px + var(--safe-l));
+    background: linear-gradient(#808080, #808080) left 3px top 3px / 22px calc(100% - 6px) no-repeat, var(--w95-face);
+  }
+  :root[data-theme="win95"] .drawer::before {
+    content: "Inkult"; position: absolute; left: 3px; bottom: 10px; width: 22px;
+    writing-mode: vertical-rl; transform: rotate(180deg); text-align: left;
+    color: #c0c0c0; font: bold 20px/22px var(--font);
+  }
+  :root[data-theme="win95"] .drawer .box { box-shadow: none; background: none; padding-left: 0; padding-right: 0; }
+  :root[data-theme="win95"] .drawer .head-box { border-top: 1px solid #808080; box-shadow: inset 0 1px #fff; }
+  :root[data-theme="win95"] .drawer .menubar { padding: 0; gap: 0; }
+  :root[data-theme="win95"] .drawer .nav-item { min-height: 40px; padding: 0 10px; font-size: 1em; letter-spacing: 0; }
+  :root[data-theme="win95"] .drawer .nav-item.active { background: var(--w95-select); color: #fff; box-shadow: none; }
+  :root[data-theme="win95"] .drawer .nav-item.active .badge { color: #fff; }
+  :root[data-theme="win95"] .track, :root[data-theme="win95"] .lib-row { border-bottom: 1px solid #dfdfdf; }
+  :root[data-theme="win95"] .track:last-child, :root[data-theme="win95"] .lib-row:last-of-type { border-bottom: 0; }
+  :root[data-theme="win95"] .tracks, :root[data-theme="win95"] .lib-list { padding: 2px 6px; }
+  :root[data-theme="win95"] .lib-facts { text-transform: none; color: #808080; }
+  :root[data-theme="win95"] .dialog { padding-bottom: calc(12px + var(--safe-b)); }
+  :root[data-theme="win95"] .dialog > form { padding: 0 calc(9px + var(--safe-r)) 0 calc(9px + var(--safe-l)); }
+  :root[data-theme="win95"] .dialog-actions .btn { border: 0; }
+  :root[data-theme="win95"] .player:not(.folded) { padding-top: 12px; }
+  :root[data-theme="win95"] .slsk-tabs { margin-inline: 0; padding-inline: 2px; }
+}
+
+/* Wide screens: the main window reaches down to the taskbar, and the list
+   views fill it with their white panel, as an Explorer window does, rather
+   than leaving bare grey (or teal) below short content. */
+@media (min-width: 641px) and (min-height: 561px) {
+  :root[data-theme="win95"] .crt { min-height: 100vh; min-height: 100dvh; }
+  :root[data-theme="win95"] .main { flex: 1 0 auto; display: flex; flex-direction: column; }
+  :root[data-theme="win95"] .main > :is(#view-search, #view-downloads, #view-library) { flex: 1 0 auto; display: flex; flex-direction: column; }
+  :root[data-theme="win95"] :is(#search-results, #jobs, #library) { flex: 1 0 auto; display: flex; flex-direction: column; }
+  :root[data-theme="win95"] #library > .lib-list { flex: 1 0 auto; align-content: start; }
+  :root[data-theme="win95"] :is(#search-results, #jobs) > .empty { flex: 1 0 auto; }
+}
+/* The transfer queue is a white list panel too. */
+:root[data-theme="win95"] #jobs { background: #fff; box-shadow: var(--w95-field); padding: 2px 8px; }
+:root[data-theme="win95"] #jobs .job { border-bottom-color: #dfdfdf; box-shadow: none; }
+/* Empty views: the message in a white panel behind an information icon. */
+:root[data-theme="win95"] .empty {
+  max-width: none; padding: 14px 16px 14px 46px; box-shadow: var(--w95-field);
+  background: var(--w95-icon-info) 16px 14px / 20px 20px no-repeat, #fff;
+}
+:root[data-theme="win95"] #jobs > .empty { box-shadow: none; }
+:root[data-theme="win95"] .irc-empty {
+  padding: 14px 16px 14px 46px; box-shadow: var(--w95-field);
+  background: var(--w95-icon-info) 16px 14px / 20px 20px no-repeat, #fff;
+}
+:root[data-theme="win95"] .irc-empty > p:first-child { font-weight: bold; margin-bottom: 6px; }
+:root[data-theme="win95"] .irc-empty > p + p { margin-top: 6px; }
+:root[data-theme="win95"] body.chat-mode .irc-main > .irc-empty { flex: 1 1 auto; }
+:root[data-theme="win95"] .empty-title { font-weight: bold; margin-bottom: 6px; }
+:root[data-theme="win95"] .empty > p:not(.empty-title) { max-width: 80ch; }
+
+/* ----- Windows 95 icons ----- */
+:root[data-theme="win95"] .nav-item[data-view="search"] { --view-ico: var(--w95-v-search); }
+:root[data-theme="win95"] .nav-item[data-view="soulseek"] { --view-ico: var(--w95-v-soulseek); }
+:root[data-theme="win95"] .nav-item[data-view="downloads"] { --view-ico: var(--w95-v-downloads); }
+:root[data-theme="win95"] .nav-item[data-view="library"] { --view-ico: var(--w95-v-library); }
+:root[data-theme="win95"] .nav-item[data-view="messages"] { --view-ico: var(--w95-v-messages); }
+:root[data-theme="win95"] .nav-item[data-view="settings"] { --view-ico: var(--w95-v-settings); }
+:root[data-theme="win95"] .nav-item[data-view="admin"] { --view-ico: var(--w95-v-admin); }
+
+/* Which picture goes with which action, glyph or menu choice. */
+:root[data-theme="win95"] [data-icon="save"], :root[data-theme="win95"] [data-glyph="save"] { --ico: var(--w95-i-save); }
+:root[data-theme="win95"] [data-icon="remove"], :root[data-theme="win95"] [data-glyph="remove"] { --ico: var(--w95-i-remove); }
+:root[data-theme="win95"] [data-icon="share"], :root[data-theme="win95"] [data-glyph="share"] { --ico: var(--w95-i-share); }
+:root[data-theme="win95"] [data-icon="convert"], :root[data-theme="win95"] [data-glyph="convert"] { --ico: var(--w95-i-convert); }
+:root[data-theme="win95"] [data-glyph="download"] { --ico: var(--w95-i-download); }
+:root[data-theme="win95"] [data-glyph="clock"] { --ico: var(--w95-i-clock); }
+:root[data-theme="win95"] [data-glyph="check"] { --ico: var(--w95-i-check); }
+:root[data-theme="win95"] [data-glyph="close"] { --ico: var(--w95-icon-error); }
+:root[data-theme="win95"] [data-glyph="volumeHigh"] { --ico: var(--w95-i-volumeHigh); }
+:root[data-theme="win95"] [data-glyph="volumeLow"] { --ico: var(--w95-i-volumeLow); }
+:root[data-theme="win95"] [data-glyph="volumeOff"] { --ico: var(--w95-i-volumeOff); }
+:root[data-theme="win95"] [data-icon="original"] { --ico: var(--w95-i-cd); }
+:root[data-theme="win95"] [data-icon="aac"], :root[data-theme="win95"] [data-icon="mp3_320"] { --ico: var(--w95-i-audio); }
+:root[data-theme="win95"] [data-icon="aiff"], :root[data-theme="win95"] [data-icon="lossless"] { --ico: var(--w95-i-wave); }
+:root[data-theme="win95"] [data-icon="upgrade"] { --ico: var(--w95-i-network); }
+:root[data-theme="win95"] [data-icon="room"] { --ico: var(--w95-i-room); }
+
+/* Toolbar-style buttons: a 16px picture before the label. */
+:root[data-theme="win95"] .icon-btn > [data-glyph]::before, :root[data-theme="win95"] .btn[data-icon]::before {
+  content: ""; display: inline-block; width: 16px; height: 16px; margin-right: 4px; vertical-align: -4px;
+  background: var(--ico) no-repeat;
+}
+:root[data-theme="win95"] .icon-btn:disabled > [data-glyph]::before, :root[data-theme="win95"] .btn[data-icon]:disabled::before {
+  filter: grayscale(1) opacity(.45);
+}
+/* The tray's volume button is just the speaker, as in the Windows tray. */
+:root[data-theme="win95"] #mute, :root[data-theme="win95"] #mute:hover:not(:disabled), :root[data-theme="win95"] #mute:active:not(:disabled) {
+  min-width: 20px; padding: 0 2px; background: none; box-shadow: none;
+}
+:root[data-theme="win95"] #mute > [data-glyph] { font-size: 0; }
+:root[data-theme="win95"] #mute > [data-glyph]::before { margin: 0; vertical-align: middle; }
+
+/* Menus: the picture in the left column. The current choice's picture is
+   framed as if pressed in, the way menus mark a checked command that has
+   an icon. */
+:root[data-theme="win95"] .format-menu .menu-item { padding-left: 28px; }
+:root[data-theme="win95"] .menu-item[data-icon]::before {
+  content: ""; position: absolute; left: 4px; top: 50%; width: 18px; height: 18px; margin-top: -9px;
+  background: var(--ico) no-repeat center;
+}
+:root[data-theme="win95"] .menu-item.selected[data-icon]::before { background-color: #dfdfdf; box-shadow: var(--w95-status); }
+:root[data-theme="win95"] .menu-item.disabled[data-icon]::before { filter: grayscale(1) opacity(.45); }
+
+/* Notices carry the information icon, as the error ones carry theirs. */
+:root[data-theme="win95"] .toast:not(.error)::before {
+  content: ""; display: inline-block; width: 16px; height: 16px; margin-right: 6px; vertical-align: -4px;
+  background: var(--w95-icon-info) no-repeat;
+}
+/* Message boxes: a 32px icon left of the question; a warning before a
+   destructive action. */
+:root[data-theme="win95"] .dialog #dialog-text:not([hidden]) {
+  min-height: 32px; padding-left: 44px; display: flex; align-items: center;
+  background: var(--w95-icon-info) left center / 32px 32px no-repeat;
+}
+:root[data-theme="win95"] .dialog:has(#dialog-submit.danger) #dialog-text { background-image: var(--w95-icon-warn); }
+
+/* Phones: the Start menu lists the views with their pictures, and the menu
+   button becomes the Start button. Sheet menus get larger pictures. */
+@media (max-width: 640px), (max-height: 560px) {
+  :root[data-theme="win95"] .drawer .nav-item { gap: 10px; }
+  :root[data-theme="win95"] .drawer .nav-item::before {
+    content: ""; width: 24px; height: 24px; flex: none; background: var(--view-ico) no-repeat center / 24px 24px;
+  }
+  :root[data-theme="win95"] .appbar-menu {
+    display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; min-width: 0;
+    font-size: 1em; font-weight: bold;
+  }
+  :root[data-theme="win95"] .appbar-menu > span[aria-hidden] { display: none; }
+  :root[data-theme="win95"] .appbar-menu::before { content: ""; width: 20px; height: 20px; background: url("/icon.svg") no-repeat center / 20px 20px; }
+  :root[data-theme="win95"] .appbar-menu::after { content: "Start"; }
+  :root[data-theme="win95"] .format-menu.sheet .menu-item { padding-left: 44px; }
+  :root[data-theme="win95"] .format-menu.sheet .menu-item[data-icon]::before {
+    left: 8px; width: 28px; height: 28px; margin-top: -14px; background-size: 24px 24px;
+  }
+}
+
+/* Loading: one "Please wait..." panel with the Find animation and a
+   progress bar filling chunk by chunk, instead of rows of dots. */
+:root[data-theme="win95"] .skeleton ~ .skeleton { display: none; }
+:root[data-theme="win95"] .skeleton {
+  height: auto; min-height: 72px; margin: 0; padding: 14px 16px 14px 62px; line-height: 1.4;
+  white-space: normal; overflow: visible; color: #000; box-shadow: var(--w95-field);
+  background: var(--w95-i-find) 16px center / 32px 32px no-repeat, #fff;
+}
+:root[data-theme="win95"] .skeleton::before { content: "Please wait..."; display: block; margin-bottom: 8px; animation: none; }
+:root[data-theme="win95"] .skeleton::after { content: ""; display: block; width: 160px; max-width: 100%; height: 16px; background: var(--w95-i-progress) no-repeat; }
+:root[data-theme="win95"] :is(#search-results, #jobs, #library) > .skeleton { flex: 0 0 auto; }
+
+/* The mascot: a paperclip assistant instead of the skeleton. */
+:root[data-theme="win95"] .kult .skelly { display: none; }
+:root[data-theme="win95"] .kult .clippy { display: block; width: 26px; height: 32px; overflow: visible; }
+:root[data-theme="win95"] .head-kult .clippy { width: 52px; height: 64px; }
+:root[data-theme="win95"] .clippy * { transform-box: view-box; }
+:root[data-theme="win95"] .cl-body { transform-origin: 15px 39px; animation: cl-doze 3s ease-in-out infinite; }
+:root[data-theme="win95"] .cl-open, :root[data-theme="win95"] .kult.playing .cl-shut, :root[data-theme="win95"] .kult.playing .cl-zzz { display: none; }
+:root[data-theme="win95"] .kult.playing .cl-open { display: inline; }
+:root[data-theme="win95"] .cl-zzz text { animation: sk-float 3s ease-out infinite; }
+:root[data-theme="win95"] .cl-zzz text:nth-child(2) { animation-delay: 1s; }
+:root[data-theme="win95"] .cl-zzz text:nth-child(3) { animation-delay: 2s; }
+/* Awake: bounces on every beat (0.5s) while swaying, brows up and down,
+   eyes darting. The dance moves of Kult that make sense for a paperclip
+   get their own motion. */
+:root[data-theme="win95"] .kult.playing .cl-body { animation: cl-groove 1s ease-in-out infinite; }
+:root[data-theme="win95"] .kult.playing .cl-brows { animation: cl-brows .5s ease-in-out infinite alternate; }
+:root[data-theme="win95"] .kult.playing .cl-pupils { animation: cl-look 2s steps(1) infinite; }
+:root[data-theme="win95"] .kult.playing[data-move="spin"] .cl-body { animation: sk-spin 1s linear infinite; }
+:root[data-theme="win95"] .kult.playing[data-move="headbang"] .cl-body { animation: cl-nod .5s cubic-bezier(.6, 0, .4, 1) infinite; }
+:root[data-theme="win95"] .kult.playing[data-move="shuffle"] .cl-body { animation: cl-shuffle 1s ease-in-out infinite; }
+:root[data-theme="win95"] .kult.playing[data-move="backflip"] .cl-body { transform-origin: 15px 22px; animation: sk-flip 2s infinite; }
+@keyframes cl-doze { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(-3deg) scaleY(.97); } }
+@keyframes cl-groove {
+  0%, 100% { transform: translateY(0) rotate(-6deg); }
+  25%, 75% { transform: translateY(-2.5px) rotate(0); }
+  50% { transform: translateY(0) rotate(6deg); }
+}
+@keyframes cl-brows { from { transform: translateY(0); } to { transform: translateY(-1.3px); } }
+@keyframes cl-look { 0% { transform: translateX(-.9px); } 50% { transform: translateX(.9px); } }
+@keyframes cl-nod { 0%, 100% { transform: rotate(0); } 40% { transform: rotate(14deg) translateY(1px); } }
+@keyframes cl-shuffle { 0%, 100% { transform: translateX(-2px) rotate(-4deg); } 50% { transform: translateX(2px) rotate(4deg); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after, body::after { animation: none !important; transition: none !important; }

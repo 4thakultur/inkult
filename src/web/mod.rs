@@ -1186,6 +1186,44 @@ mod tests {
         }
     }
 
+    /// The keys of a `const NAME = { key: ..., "key-2": ... };` object
+    /// literal written one entry per line.
+    fn object_keys(source: &str, opening: &str) -> Vec<String> {
+        let start = source.find(opening).expect("object literal") + opening.len();
+        let body = &source[start..start + source[start..].find("};").expect("end of object")];
+        body.lines()
+            .filter_map(|line| line.trim().split_once(':'))
+            .map(|(key, _)| key.trim_matches('"').to_owned())
+            .collect()
+    }
+
+    /// A theme is listed in four places: theme.js (applied before first
+    /// paint), app.js, the settings chips and app.css. One missing from any
+    /// of them is silently replaced by the default, or offered unstyled.
+    #[test]
+    fn themes_agree_across_the_assets() {
+        let early = object_keys(THEME_JS, "const THEME_COLORS = {");
+        let app = object_keys(APP_JS, "const THEMES = {");
+        let chips: Vec<String> = INDEX_HTML
+            .split("data-theme-id=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('"'))
+            .map(|(id, _)| id.to_owned())
+            .collect();
+        assert!(app.len() > 1, "{app:?}");
+        assert_eq!(early, app, "theme.js and app.js list different themes");
+        assert_eq!(
+            chips, app,
+            "the settings chips and app.js list different themes"
+        );
+        for id in &app {
+            assert!(
+                APP_CSS.contains(&format!("data-theme=\"{id}\"")),
+                "app.css has no rules for theme {id}"
+            );
+        }
+    }
+
     fn headers(origin: Option<&str>, host: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(header::HOST, HeaderValue::from_str(host).unwrap());

@@ -25,8 +25,8 @@ a clean library. One server, several users, a single shared music folder.
   admin-only server settings.
 
 A single Rust binary with an embedded web UI (green-phosphor terminal look,
-with an AMOLED theme and colour variants), usable on desktop, tablet and
-phone.
+with pure-black colour themes and a Windows 95 theme), usable on desktop,
+tablet and phone.
 
 ## Contents
 
@@ -183,8 +183,9 @@ description tag, never the comment tag, which DJ software uses for cue notes.
 ### Themes and devices
 
 **[6] SETTINGS** switches between *Pipeboy* (the original green phosphor
-look), *AMOLED* (pure black background) and the AMOLED colour variants
-*White*, *Blue*, *Purple*, *Orange* and *Red*, remembered per browser. On
+look), the pure-black themes *Green*, *White*, *Blue*, *Purple*, *Orange* and
+*Red*, and *Windows 95* (grey bevelled windows on a teal desktop), remembered
+per browser. On
 phones the menu becomes a slide-in drawer, dialogs become bottom sheets, and
 the chat fits the screen without page scrolling.
 

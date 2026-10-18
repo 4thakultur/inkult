@@ -7,16 +7,27 @@
 (() => {
   const THEME_COLORS = {
     pipeboy: "#020a03",
-    amoled: "#000000",
-    "amoled-white": "#000000",
-    "amoled-blue": "#000000",
-    "amoled-purple": "#000000",
-    "amoled-orange": "#000000",
-    "amoled-red": "#000000",
+    green: "#000000",
+    white: "#000000",
+    blue: "#000000",
+    purple: "#000000",
+    orange: "#000000",
+    red: "#000000",
+    win95: "#008080",
+  };
+  // Ids the black themes had before they were renamed; a browser that saved
+  // one keeps its colour instead of falling back to the default.
+  const RENAMED = {
+    amoled: "green", "amoled-white": "white", "amoled-blue": "blue",
+    "amoled-purple": "purple", "amoled-orange": "orange", "amoled-red": "red",
   };
   let theme = "pipeboy";
   try {
-    const saved = localStorage.getItem("inkult.theme");
+    let saved = localStorage.getItem("inkult.theme");
+    if (saved && Object.hasOwn(RENAMED, saved)) {
+      saved = RENAMED[saved];
+      localStorage.setItem("inkult.theme", saved);
+    }
     if (saved && Object.hasOwn(THEME_COLORS, saved)) theme = saved;
   } catch { /* storage unavailable: default theme */ }
   document.documentElement.dataset.theme = theme;
