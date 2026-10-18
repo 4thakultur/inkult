@@ -13,6 +13,7 @@
 //!      ├─ peers               P connections (requests/results), F (file data)
 //!      ├─ searches, browse, user info, private messages, wishlist
 //!      ├─ downloads           queue → remote queue → transfer → library import
+//!      ├─ upgrades            lossless copies of library tracks (see `upgrade`)
 //!      └─ uploads             opt-in sharing of the user's own library
 //! ```
 //!
@@ -33,6 +34,7 @@ mod search;
 mod session;
 mod social;
 mod store;
+mod upgrade;
 mod uploads;
 mod wire;
 
@@ -48,10 +50,12 @@ use tokio::net::TcpListener;
 use crate::auth::UserId;
 use crate::domain::length::TrackLengthLimit;
 use crate::library::Library;
+use crate::tools::ffmpeg::Ffmpeg;
 
 pub use downloads::FileRequest;
 pub use session::{AccountStatus, Session};
 pub use store::StoreError;
+pub use upgrade::{UpgradeError, UpgradeProgress, UpgradeWanted};
 
 /// Longest search query accepted (the network has no documented limit;
 /// real queries are short).
@@ -126,6 +130,8 @@ pub struct SoulseekConfig {
 pub(crate) struct Context {
     pub config: SoulseekConfig,
     pub library: Arc<Library>,
+    /// For the spectrum check of received lossless files.
+    pub ffmpeg: Arc<Ffmpeg>,
     pub store: store::Store,
 }
 
@@ -157,7 +163,11 @@ pub struct Soulseek {
 }
 
 impl Soulseek {
-    pub async fn new(config: SoulseekConfig, library: Arc<Library>) -> Result<Self, StoreError> {
+    pub async fn new(
+        config: SoulseekConfig,
+        library: Arc<Library>,
+        ffmpeg: Arc<Ffmpeg>,
+    ) -> Result<Self, StoreError> {
         let store = store::Store::open(config.store_path.clone()).await?;
         let mut ports = config.ports.clone();
         ports.reverse(); // hand out the first configured port first
@@ -166,6 +176,7 @@ impl Soulseek {
             ctx: Arc::new(Context {
                 config,
                 library,
+                ffmpeg,
                 store,
             }),
             sessions: Mutex::new(HashMap::new()),

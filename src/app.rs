@@ -32,7 +32,9 @@ use crate::providers::{
 use crate::rooms::{MessageView, RoomError, RoomId, RoomView, Rooms, SharedTrack, TrackStatus};
 use crate::search::{FilterSummary, RawFilters, SearchFilters};
 use crate::settings::{ServerSettings, Settings, SettingsError};
-use crate::soulseek::{AccountStatus, Session as SoulseekSession, Soulseek, SoulseekError};
+use crate::soulseek::{
+    AccountStatus, Session as SoulseekSession, Soulseek, SoulseekError, UpgradeWanted,
+};
 use crate::tools::ToolStatus;
 use crate::tools::ffmpeg::Ffmpeg;
 use crate::tools::ytdlp::YtDlp;
@@ -157,8 +159,33 @@ pub struct LibraryItem {
     pub entry: LibraryEntry,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owned_by: Option<Vec<String>>,
+    /// Sort key for the file's real quality (see
+    /// [`crate::domain::quality::QualityReport::library_rank`]); higher is
+    /// better.
+    pub quality_rank: u64,
     /// Every other format, and whether this track can be had in it.
     pub convert_to: Vec<ConvertOption>,
+    /// Whether a lossless copy can be looked for on Soulseek. Absent for
+    /// tracks that came from Soulseek in the first place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<UpgradeOption>,
+}
+
+/// Whether a quality upgrade is possible for a library track.
+#[derive(Debug, Serialize)]
+pub struct UpgradeOption {
+    pub available: bool,
+    /// Why it is unavailable, or a note such as "already on disk".
+    pub note: Option<String>,
+}
+
+/// Look for a lossless copy of a library track (identified like a file
+/// download; `from` is the format the user picked it in).
+#[derive(Debug, Deserialize)]
+pub struct UpgradeRequest {
+    pub provider: String,
+    pub id: String,
+    pub from: String,
 }
 
 /// One format a library track could be converted to.
@@ -593,6 +620,12 @@ impl App {
         actor: &User,
         request: EnqueueRequest,
     ) -> Result<EnqueueResponse, AppError> {
+        if !request.output.is_downloadable() {
+            return Err(AppError::BadRequest(format!(
+                "{} cannot be downloaded; use Quality upgrade on a library track",
+                request.output.label()
+            )));
+        }
         let url = parse_user_url(&request.url)?;
         let (provider, kind) = self
             .registry
@@ -773,6 +806,7 @@ impl App {
         }
         let all = self.library.entries().await;
         let options = ConversionOptions::new(&all, actor.id);
+        let soulseek_ready = self.soulseek.require(actor.id).is_ok();
         let names = if actor.role.is_captain() {
             Some(self.auth.usernames().await)
         } else {
@@ -784,12 +818,22 @@ impl App {
             .map(|entry| {
                 let owned_by = names.as_ref().map(|n| Self::names(n, &entry.owners));
                 let convert_to = options.for_entry(entry);
+                let upgrade = options.upgrade_for(entry, soulseek_ready);
                 let mut entry = entry.clone();
+                // "Added" in the viewer's own library is when they got the
+                // file, which for a shared file can be long after it was
+                // first downloaded; the whole hold shows the file's time.
+                if scope == LibraryScope::Mine {
+                    entry.added_at = entry.added_for(actor.id);
+                }
                 entry.owners.clear();
+                entry.owned_since.clear();
                 LibraryItem {
+                    quality_rank: entry.quality.library_rank(),
                     entry,
                     owned_by,
                     convert_to,
+                    upgrade,
                 }
             })
             .collect())
@@ -830,6 +874,117 @@ impl App {
         Ok(EnqueueResponse {
             job_ids: vec![id],
             warning: None,
+        })
+    }
+
+    /// Queue a quality upgrade: look for a lossless copy of a library track
+    /// on Soulseek, through the actor's own Soulseek session, and add it as
+    /// the track's Lossless format. If one is already on disk it is just
+    /// added to their library (`job_ids` then stays empty).
+    pub async fn upgrade(
+        &self,
+        actor: &User,
+        request: UpgradeRequest,
+    ) -> Result<EnqueueResponse, AppError> {
+        let (entry, _) = self
+            .library_entry(actor, &request.provider, &request.id, &request.from)
+            .await?;
+        if entry.key.provider == ProviderKind::Soulseek {
+            return Err(AppError::BadRequest(
+                "quality upgrades are for tracks downloaded from search; this one came from Soulseek"
+                    .into(),
+            ));
+        }
+        let lossless = OutputFormat::Lossless;
+        if let Some(existing) = self.library.find(&entry.key, lossless).await {
+            if existing.owners.contains(&actor.id) {
+                return Err(AppError::BadRequest(
+                    "a lossless copy of this track is already in your library".into(),
+                ));
+            }
+            self.library
+                .add_owners(&entry.key, lossless, &BTreeSet::from([actor.id]))
+                .await;
+            return Ok(EnqueueResponse {
+                job_ids: Vec::new(),
+                warning: Some("A lossless copy was already on disk; added to your library".into()),
+            });
+        }
+        let (best, _) = self
+            .library
+            .best_source(&entry.key)
+            .await
+            .ok_or(AppError::NotFound)?;
+        if best.quality.lossless {
+            return Err(AppError::BadRequest(format!(
+                "this track is already lossless ({})",
+                best.quality.summary
+            )));
+        }
+        let session = self.upgrade_session(actor)?;
+        self.require_tools(&["ffmpeg"]).await?;
+        let wanted = UpgradeWanted::from_library(&self.library, &entry.key)
+            .await
+            .ok_or(AppError::NotFound)?;
+        let id = self
+            .jobs
+            .enqueue_upgrade(&entry, wanted, session, actor.id)?;
+        tracing::info!(user = %actor.username, track = %entry.key, job = id, "quality upgrade queued");
+        Ok(EnqueueResponse {
+            job_ids: vec![id],
+            warning: None,
+        })
+    }
+
+    /// Quality upgrade straight from a search result: look for a lossless
+    /// copy of a provider's track on Soulseek without downloading the
+    /// provider's own (lossy) stream. The job resolves the track's metadata
+    /// and cover from the provider to tag the file with.
+    pub async fn upgrade_from_search(
+        &self,
+        actor: &User,
+        request: EnqueueRequest,
+    ) -> Result<EnqueueResponse, AppError> {
+        let url = parse_user_url(&request.url)?;
+        let (provider, kind) = self
+            .registry
+            .classify(&url)
+            .ok_or(ProviderError::UnsupportedUrl)?;
+        if kind != UrlKind::Track {
+            return Err(AppError::BadRequest(
+                "quality upgrades are for single tracks, not playlists or albums".into(),
+            ));
+        }
+        let session = self.upgrade_session(actor)?;
+        self.require_tools(&["yt-dlp", "ffmpeg"]).await?;
+        let title = request
+            .title
+            .as_deref()
+            .and_then(clean_text)
+            .unwrap_or_else(|| url.to_string());
+        let artists = clean_artists(&request.artists);
+        let thumbnail_url = request.thumbnail_url.filter(|u| is_provider_image_url(u));
+        let id = self.jobs.enqueue_upgrade_from_source(
+            provider,
+            url,
+            (title, artists, thumbnail_url),
+            session,
+            actor.id,
+        )?;
+        tracing::info!(user = %actor.username, job = id, "quality upgrade from search queued");
+        Ok(EnqueueResponse {
+            job_ids: vec![id],
+            warning: None,
+        })
+    }
+
+    /// The actor's Soulseek session, which quality upgrades search with.
+    fn upgrade_session(&self, actor: &User) -> Result<Arc<SoulseekSession>, AppError> {
+        self.soulseek.require(actor.id).map_err(|_| {
+            AppError::BadRequest(
+                "sign in to Soulseek in [2] SOULSEEK first; upgrades search it with your account"
+                    .into(),
+            )
         })
     }
 
@@ -1428,7 +1583,8 @@ impl<'a> ConversionOptions<'a> {
         let source = self.best.get(&entry.key).copied().unwrap_or(entry);
         OutputFormat::ALL
             .into_iter()
-            .filter(|&output| output != entry.output)
+            // A lossless copy is never converted to; see `upgrade_for`.
+            .filter(|&output| output != entry.output && output != OutputFormat::Lossless)
             .map(|output| {
                 let (available, note) = match self.present.get(&(&entry.key, output)) {
                     Some(true) => (false, Some("already in your library".to_owned())),
@@ -1448,6 +1604,39 @@ impl<'a> ConversionOptions<'a> {
     }
 }
 
+impl ConversionOptions<'_> {
+    /// Whether the user can ask for a quality upgrade of `entry`'s track.
+    /// Soulseek tracks get none: they are already someone's best copy.
+    fn upgrade_for(&self, entry: &LibraryEntry, soulseek_ready: bool) -> Option<UpgradeOption> {
+        if entry.key.provider == ProviderKind::Soulseek {
+            return None;
+        }
+        let (available, note) = match self.present.get(&(&entry.key, OutputFormat::Lossless)) {
+            Some(true) => (false, "a lossless copy is already in your library".to_owned()),
+            Some(false) => (true, "a lossless copy is on disk; added instantly".to_owned()),
+            None => match self.best.get(&entry.key) {
+                Some(best) if best.quality.lossless => (
+                    false,
+                    format!("already lossless ({})", best.quality.summary),
+                ),
+                _ if !soulseek_ready => (
+                    false,
+                    "sign in to Soulseek in [2] SOULSEEK first".to_owned(),
+                ),
+                _ => (
+                    true,
+                    "Find a lossless copy (FLAC, WAV, AIFF) on Soulseek and add it as another format"
+                        .to_owned(),
+                ),
+            },
+        };
+        Some(UpgradeOption {
+            available,
+            note: Some(note),
+        })
+    }
+}
+
 /// A library file ready to be sent to the user's device.
 pub struct LibraryFile {
     pub path: std::path::PathBuf,
@@ -1457,6 +1646,7 @@ pub struct LibraryFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::quality::{Codec, QualityReport};
 
     fn user(id: u64, role: Role) -> User {
         User {
@@ -1469,6 +1659,101 @@ mod tests {
             password_temporary: false,
             temporary_password_expires_at: None,
         }
+    }
+
+    fn entry(
+        provider: ProviderKind,
+        output: OutputFormat,
+        codec: Codec,
+        owner: u64,
+    ) -> LibraryEntry {
+        LibraryEntry {
+            key: TrackKey {
+                provider,
+                id: "t".into(),
+            },
+            path: "Artist/Singles/T.x".into(),
+            title: "T".into(),
+            artists: vec!["Artist".into()],
+            album: None,
+            source_url: "https://example/t".into(),
+            artwork_url: None,
+            quality: QualityReport::new(
+                codec,
+                "x".into(),
+                Some(900),
+                Some(44_100),
+                Some(16),
+                Some(2),
+            ),
+            output,
+            added_at: 1,
+            owners: BTreeSet::from([UserId(owner)]),
+            owned_since: Default::default(),
+            obtained_from: None,
+        }
+    }
+
+    #[test]
+    fn upgrades_are_offered_for_lossy_tracks_from_search_only() {
+        let opus = entry(
+            ProviderKind::YouTube,
+            OutputFormat::Original,
+            Codec::Opus,
+            1,
+        );
+        let entries = [opus.clone()];
+        let options = ConversionOptions::new(&entries, UserId(1));
+        let offer = options.upgrade_for(&opus, true).unwrap();
+        assert!(offer.available);
+        let offer = options.upgrade_for(&opus, false).unwrap();
+        assert!(!offer.available, "needs a Soulseek session");
+        // Lossless is not a conversion target.
+        assert!(
+            options
+                .for_entry(&opus)
+                .iter()
+                .all(|o| o.output != OutputFormat::Lossless)
+        );
+
+        let slsk = entry(
+            ProviderKind::Soulseek,
+            OutputFormat::Original,
+            Codec::Mp3,
+            1,
+        );
+        let entries = [slsk.clone()];
+        assert!(
+            ConversionOptions::new(&entries, UserId(1))
+                .upgrade_for(&slsk, true)
+                .is_none()
+        );
+
+        let wav = entry(
+            ProviderKind::SoundCloud,
+            OutputFormat::Original,
+            Codec::Pcm,
+            1,
+        );
+        let entries = [wav.clone()];
+        let offer = ConversionOptions::new(&entries, UserId(1))
+            .upgrade_for(&wav, true)
+            .unwrap();
+        assert!(!offer.available, "already lossless");
+
+        // Someone else's upgrade is on disk: added instantly, even signed out.
+        let flac = entry(
+            ProviderKind::YouTube,
+            OutputFormat::Lossless,
+            Codec::Flac,
+            2,
+        );
+        let entries = [opus.clone(), flac];
+        let options = ConversionOptions::new(&entries, UserId(1));
+        let offer = options.upgrade_for(&opus, false).unwrap();
+        assert!(offer.available);
+        let options = ConversionOptions::new(&entries, UserId(2));
+        assert!(!options.upgrade_for(&opus, true).unwrap().available);
     }
 
     #[test]

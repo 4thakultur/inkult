@@ -16,7 +16,7 @@ pub mod layout;
 pub mod place;
 pub mod sanitize;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -66,11 +66,50 @@ pub struct LibraryEntry {
     /// originals.
     #[serde(default)]
     pub output: OutputFormat,
-    /// Unix timestamp (seconds).
+    /// When the file was placed in the library. Unix timestamp (seconds).
     pub added_at: u64,
     /// Users who downloaded this file and therefore see it in their library.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub owners: BTreeSet<UserId>,
+    /// When each owner got the file, which is later than `added_at` for
+    /// someone who joined a download or claimed a shared track. Owners from
+    /// before this was recorded have no entry (see [`LibraryEntry::added_for`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub owned_since: BTreeMap<UserId, u64>,
+    /// Where the file itself came from, when that is not the track's own
+    /// source: a quality upgrade found on Soulseek is filed under the
+    /// original track (`key`, `source_url`) but is another user's file,
+    /// e.g. `slsk://user/Music/Artist/01 Track.flac`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obtained_from: Option<String>,
+}
+
+impl LibraryEntry {
+    /// When this file entered `user`'s library.
+    pub fn added_for(&self, user: UserId) -> u64 {
+        self.owned_since
+            .get(&user)
+            .copied()
+            .unwrap_or(self.added_at)
+    }
+
+    fn add_owner(&mut self, user: UserId, now: u64) {
+        if self.owners.insert(user) {
+            self.owned_since.insert(user, now);
+        }
+    }
+
+    fn drop_owner(&mut self, user: UserId) -> bool {
+        self.owned_since.remove(&user);
+        self.owners.remove(&user)
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -163,7 +202,10 @@ impl Library {
         if owners.is_subset(&entry.owners) {
             return Some(entry.clone());
         }
-        entry.owners.extend(owners.iter().copied());
+        let now = unix_now();
+        for &owner in owners {
+            entry.add_owner(owner, now);
+        }
         let updated = entry.clone();
         persist(&self.index_path, &index).await;
         Some(updated)
@@ -176,7 +218,7 @@ impl Library {
         let mut index = self.index.lock().await;
         let mut changed = false;
         for entry in &mut index.entries {
-            changed |= entry.owners.remove(&user);
+            changed |= entry.drop_owner(user);
         }
         if changed {
             persist(&self.index_path, &index).await;
@@ -204,7 +246,7 @@ impl Library {
         };
         if let RemoveFrom::Only(user) = from {
             let entry = &mut index.entries[pos];
-            if !entry.owners.remove(&user) {
+            if !entry.drop_owner(user) {
                 return Ok(None);
             }
             if !entry.owners.is_empty() {
@@ -262,6 +304,8 @@ impl Library {
             output,
             added_at: 0,
             owners,
+            owned_since: BTreeMap::new(),
+            obtained_from: None,
         };
         self.place_and_record(staged_file, entry).await
     }
@@ -304,7 +348,52 @@ impl Library {
             quality,
             output,
             owners,
+            owned_since: BTreeMap::new(),
             ..source.clone()
+        };
+        self.place_and_record(staged_file, entry).await
+    }
+
+    /// Add a lossless copy of a track that came from somewhere else (a
+    /// quality upgrade) as the track's [`OutputFormat::Lossless`] format,
+    /// with `obtained_from` recording where the file really came from.
+    /// Next to the library's copy when there is one (same identity and
+    /// listing; that copy is not touched), else filed like a download of
+    /// the track.
+    pub async fn import_upgrade(
+        &self,
+        staged_file: PathBuf,
+        of: UpgradeOf<'_>,
+        quality: QualityReport,
+        extension: &str,
+        obtained_from: String,
+        owners: BTreeSet<UserId>,
+    ) -> Result<LibraryEntry, LibraryError> {
+        let entry = match of {
+            UpgradeOf::Track(track) => LibraryEntry {
+                path: track.path.with_extension(extension),
+                quality,
+                output: OutputFormat::Lossless,
+                owners,
+                owned_since: BTreeMap::new(),
+                obtained_from: Some(obtained_from),
+                ..track.clone()
+            },
+            UpgradeOf::New(meta) => LibraryEntry {
+                key: meta.key(),
+                path: layout::relative_path(meta, extension),
+                title: meta.title.clone(),
+                artists: meta.artists.clone(),
+                album: meta.album.clone(),
+                source_url: meta.source_url.clone(),
+                artwork_url: meta.artwork_url.clone(),
+                quality,
+                output: OutputFormat::Lossless,
+                added_at: 0,
+                owners,
+                owned_since: BTreeMap::new(),
+                obtained_from: Some(obtained_from),
+            },
         };
         self.place_and_record(staged_file, entry).await
     }
@@ -329,16 +418,23 @@ impl Library {
         .await
         .map_err(|e| io_err("placing file")(io::Error::other(e)))?
         .map_err(io_err(format!("placing {}", planned.display())))?;
-        entry.added_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or_default();
+        entry.added_at = unix_now();
+        entry.owned_since = entry.owners.iter().map(|&o| (o, entry.added_at)).collect();
 
         index.entries.push(entry.clone());
         index.version = INDEX_VERSION;
         persist(&self.index_path, &index).await;
         Ok(entry)
     }
+}
+
+/// What a quality upgrade is a copy of.
+#[derive(Debug, Clone, Copy)]
+pub enum UpgradeOf<'a> {
+    /// A track in the library.
+    Track(&'a LibraryEntry),
+    /// A track known only from its provider (upgraded from a search result).
+    New(&'a TrackMetadata),
 }
 
 /// Whose copy of a track [`Library::remove`] removes.
@@ -583,6 +679,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_owner_keeps_the_time_they_got_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let index_path = data.path().join("library.json");
+        let library = Library::open(root.path().into(), index_path.clone())
+            .await
+            .unwrap();
+        let (anne, jack) = (UserId(1), UserId(2));
+
+        let staged = data.path().join("media.mp3");
+        std::fs::write(&staged, b"a").unwrap();
+        let entry = library
+            .import(
+                staged,
+                &meta("1"),
+                quality(),
+                OutputFormat::Original,
+                "mp3",
+                BTreeSet::from([anne]),
+            )
+            .await
+            .unwrap();
+        assert!(entry.added_at > 0);
+        assert_eq!(entry.added_for(anne), entry.added_at);
+
+        // Joining later is recorded; joining again keeps the first time.
+        let key = meta("1").key();
+        let mut later = entry.clone();
+        later.owned_since.clear();
+        let updated = library
+            .add_owners(&key, OutputFormat::Original, &BTreeSet::from([jack]))
+            .await
+            .unwrap();
+        assert!(updated.owned_since.contains_key(&jack));
+        assert!(updated.added_for(jack) >= entry.added_at);
+
+        // Owners recorded before per-owner times existed fall back to the
+        // file's time.
+        later.owners.insert(jack);
+        assert_eq!(later.added_for(jack), later.added_at);
+
+        library.remove_owner(anne).await;
+        let reopened = Library::open(root.path().into(), index_path).await.unwrap();
+        let stored = &reopened.entries().await[0];
+        assert_eq!(
+            stored.owned_since.keys().copied().collect::<Vec<_>>(),
+            vec![jack]
+        );
+        assert_eq!(stored.added_for(jack), updated.added_for(jack));
+    }
+
+    #[tokio::test]
     async fn converted_copies_sit_next_to_the_best_source() {
         let root = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
@@ -636,6 +784,74 @@ mod tests {
         std::fs::remove_file(root.path().join(&original.path)).unwrap();
         let (best, _) = library.best_source(&original.key).await.unwrap();
         assert_eq!(best.output, OutputFormat::Aiff);
+    }
+
+    #[tokio::test]
+    async fn upgrades_join_the_track_without_touching_it() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let library = Library::open(root.path().into(), data.path().join("library.json"))
+            .await
+            .unwrap();
+        let staged = data.path().join("media.mp3");
+        std::fs::write(&staged, b"original").unwrap();
+        let original = library
+            .import(
+                staged,
+                &meta("1"),
+                quality(),
+                OutputFormat::Original,
+                "mp3",
+                BTreeSet::from([UserId(1)]),
+            )
+            .await
+            .unwrap();
+
+        let staged = data.path().join("received.flac");
+        std::fs::write(&staged, b"flac").unwrap();
+        let flac = QualityReport::new(
+            Codec::Flac,
+            "flac".into(),
+            Some(900),
+            Some(44_100),
+            Some(16),
+            Some(2),
+        );
+        let upgrade = library
+            .import_upgrade(
+                staged,
+                UpgradeOf::Track(&original),
+                flac,
+                "flac",
+                "slsk://peer/Music/Same Title.flac".into(),
+                BTreeSet::from([UserId(1)]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upgrade.key, original.key);
+        assert_eq!(upgrade.output, OutputFormat::Lossless);
+        assert_eq!(upgrade.source_url, original.source_url);
+        assert_eq!(
+            upgrade.obtained_from.as_deref(),
+            Some("slsk://peer/Music/Same Title.flac")
+        );
+        assert_eq!(
+            upgrade.path,
+            PathBuf::from("Artist/Singles/Same Title.flac")
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(&original.path)).unwrap(),
+            b"original"
+        );
+        // The lossless copy is now what conversions start from.
+        let (best, _) = library.best_source(&original.key).await.unwrap();
+        assert_eq!(best.output, OutputFormat::Lossless);
+        assert!(
+            library
+                .find(&original.key, OutputFormat::Lossless)
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]

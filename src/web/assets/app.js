@@ -23,11 +23,12 @@ const OUTPUTS = [
   { id: "mp3_320", label: "MP3 320 kbps", detail: "Re-encoded for maximum compatibility. Bigger file, but not better sound than the source." },
   { id: "aiff", label: "AIFF", detail: "Uncompressed, for CDJs and Rekordbox. No extra loss; about 10 MB per minute." },
 ];
-const OUTPUT_SHORT = { original: "Original", aac: "AAC", mp3_320: "MP3 320", aiff: "AIFF" };
+const OUTPUT_SHORT = { original: "Original", aac: "AAC", mp3_320: "MP3 320", aiff: "AIFF", lossless: "Lossless" };
 const OUTPUT_KEY = "inkult.output";
 const VOLUME_KEY = "inkult.volume";
 /** Whether SoundCloud artist pages also list the tracks the artist reposted. */
 const REPOSTS_KEY = "inkult.artistReposts";
+const LIBRARY_SORT_KEY = "inkult.librarySort";
 // UI colour themes; `color` feeds <meta name="theme-color">. theme.js applies
 // the saved one before first paint and must list the same ids.
 const THEMES = {
@@ -78,6 +79,8 @@ const state = {
   library: [],
   /** Track identity → output format picked in its library format menu. */
   libraryFormat: new Map(),
+  /** Library order: a LIBRARY_SORTS key and whether it is reversed. */
+  librarySort: { by: "added", reversed: false },
   jobEls: new Map(),
   /** Job id → state at the last poll, for announcing transitions. */
   jobStates: null,
@@ -733,23 +736,27 @@ const PHONE = window.matchMedia("(max-width: 640px)");
  * `choices` it is the download menu (all formats, remembers the pick).
  * `choices`: [{ id, label, detail, disabled }] for other uses, such as
  * converting, where impossible formats are shown disabled with the reason.
+ * `extras`: actions listed after the formats of the download menu (never
+ * remembered as the preferred format).
  */
-function openFormatMenu(anchor, onPick, { title = "SELECT FORMAT:", choices = null } = {}) {
+function openFormatMenu(anchor, onPick, { title = "SELECT FORMAT:", choices = null, extras = [] } = {}) {
   const wasOpenHere = openMenu && openMenu.anchor === anchor;
   closeFormatMenu();
   if (wasOpenHere) return;
 
   const preferred = choices ? null : preferredOutput();
-  const options = choices || OUTPUTS;
+  const options = [...(choices || OUTPUTS), ...extras];
+  const isFormat = (option) => !choices && !extras.includes(option);
   const buttons = options.map((output) => h("button", {
-    type: "button", role: choices ? "menuitem" : "menuitemradio",
-    "aria-checked": choices ? null : String(output.id === preferred),
+    type: "button", role: isFormat(output) ? "menuitemradio" : "menuitem",
+    "aria-checked": isFormat(output) ? String(output.id === preferred) : null,
     "aria-disabled": output.disabled ? "true" : null,
-    class: ["menu-item", output.id === preferred && "selected", output.disabled && "disabled"].filter(Boolean).join(" "),
+    class: ["menu-item", isFormat(output) && output.id === preferred && "selected",
+      output.disabled && "disabled", extras.includes(output) && "menu-extra"].filter(Boolean).join(" "),
     onclick: () => {
       if (output.disabled) return;
       closeFormatMenu();
-      if (!choices) rememberOutput(output.id);
+      if (isFormat(output)) rememberOutput(output.id);
       onPick(output.id);
     },
   },
@@ -834,14 +841,18 @@ function downloadButton(track) {
   }, icon("download"));
   btn.addEventListener("click", () => openFormatMenu(btn, async (output) => {
     btn.disabled = true;
+    const body = {
+      url: track.url,
+      title: track.title,
+      artists: track.artists,
+      thumbnail_url: track.thumbnail_url,
+    };
     try {
-      await enqueue({
-        url: track.url,
-        title: track.title,
-        artists: track.artists,
-        thumbnail_url: track.thumbnail_url,
-        output,
-      });
+      if (output === UPGRADE_CHOICE) {
+        await upgradeFromSearch(body);
+      } else {
+        await enqueue({ ...body, output });
+      }
       btn.replaceWith(h("button", {
         class: "icon-btn", type: "button", title: "In download queue",
         "aria-label": "In download queue", onclick: () => showView("downloads"),
@@ -849,8 +860,37 @@ function downloadButton(track) {
     } catch {
       btn.disabled = false;
     }
-  }));
+  }, { extras: [searchUpgradeChoice()] }));
   return btn;
+}
+
+/** Soulseek session states in which nothing can be searched. */
+const SLSK_ENDED = new Set(["signed_out", "kicked", "rejected"]);
+
+/** The download menu's quality upgrade, with why it can't run if it can't. */
+function searchUpgradeChoice() {
+  // Unknown until the Soulseek tab has loaded once; the server then explains.
+  const signedOut = Boolean(slsk.status) && SLSK_ENDED.has(slsk.status.state);
+  return {
+    id: UPGRADE_CHOICE,
+    label: "Quality upgrade",
+    detail: signedOut
+      ? "Not possible: sign in to Soulseek in [2] SOULSEEK first"
+      : "Skip the stream: find a lossless copy (FLAC, WAV, AIFF) on Soulseek, checked for fakes",
+    disabled: signedOut,
+  };
+}
+
+/** Queue a quality upgrade of a search result, without downloading the stream. */
+async function upgradeFromSearch(body) {
+  try {
+    await api("/api/downloads/upgrade", { method: "POST", body });
+    toast(`Looking for a lossless copy of “${body.title}” on Soulseek; progress in Downloads`);
+    await pollJobs();
+  } catch (err) {
+    toast(err.message, true);
+    throw err;
+  }
 }
 
 function artistButton(link, text = link.name) {
@@ -1283,6 +1323,7 @@ function jobFacts(job) {
       job.quality.converted_from
         ? ` · converted from ${job.quality.converted_from}`
         : " · not re-encoded"));
+    if (job.quality.spectrum) facts.push(fact("Spectrum", job.quality.spectrum.summary));
   }
   facts.push(fact("Album", meta.album));
   if (meta.release_date) {
@@ -1326,8 +1367,16 @@ function saveButton(job) {
 
 function stateLabel(job) {
   if (job.kind === "convert" && job.state === "processing") return "Converting";
+  if (job.kind === "upgrade" && job.state === "resolving") return "Searching";
+  if (job.kind === "upgrade" && job.state === "processing") return "Verifying";
   return STATE_LABELS[job.state] || job.state;
 }
+
+/** Subtitle of jobs that do not download from the track's own provider. */
+const JOB_KIND_LABELS = {
+  convert: "conversion of a library file",
+  upgrade: "quality upgrade from Soulseek",
+};
 
 function jobCard(job) {
   const meta = job.metadata;
@@ -1351,9 +1400,8 @@ function jobCard(job) {
         h("span", { class: "format-pill", title: "Requested format" }, OUTPUT_SHORT[job.output] || job.output),
         h("span", { class: `state ${job.state}` }, stateLabel(job))),
       h("div", { class: "subtitle" },
-        `${job.artists.join(", ") || "Unknown artist"} · ${job.kind === "convert"
-          ? "conversion of a library file"
-          : PROVIDER_NAMES[job.provider] || job.provider}`),
+        `${job.artists.join(", ") || "Unknown artist"} · ${JOB_KIND_LABELS[job.kind]
+          || PROVIDER_NAMES[job.provider] || job.provider}`),
       progressBar(job),
       h("div", { class: "facts" }, jobFacts(job)),
       job.destination ? h("div", { class: "path", title: "Location in library" }, job.destination) : null,
@@ -1462,7 +1510,7 @@ function renderLibrary() {
     return;
   }
   const tracks = groupLibrary(state.library);
-  const shown = tracks.filter((versions) => !filter || versions.some((entry) =>
+  const shown = sortLibrary(tracks).filter((versions) => !filter || versions.some((entry) =>
     [entry.title, entry.album, entry.path, ...entry.artists, ...(entry.owned_by || [])]
       .some((v) => v && v.toLowerCase().includes(filter))));
   const files = (list) => list.reduce((n, versions) => n + versions.length, 0);
@@ -1473,7 +1521,7 @@ function renderLibrary() {
   container.replaceChildren(
     h("div", { class: "lib-list" },
       h("div", { class: "lib-row list-head", "aria-hidden": "true" }, h("span"), h("span", {}, "NAME"),
-        h("span", { class: "album" }, "ALBUM"), h("span", { class: "path-cell" }, "FILE"),
+        h("span", { class: "album" }, "ALBUM"), h("span", { class: "added-cell" }, "ADDED"),
         h("span", { class: "quality-cell" }, "QUALITY"), h("span")),
       ...shown.map(libraryRow)),
     listFoot(filter ? `${count(shown)} OF ${count(tracks)} MATCH` : count(tracks)));
@@ -1485,8 +1533,9 @@ function trackIdentity(key) {
 
 /**
  * The library as one list per track: every file of the same provider
- * identity (the original and its conversions) together, ordered like the
- * format list. Tracks keep the order of their newest file.
+ * identity (the original, its conversions and a lossless upgrade) together,
+ * the upgrade first (it is the best copy), then in format-list order.
+ * Tracks keep the order of their newest file.
  */
 function groupLibrary(entries) {
   const groups = new Map();
@@ -1496,10 +1545,99 @@ function groupLibrary(entries) {
     groups.get(id).push(entry);
   }
   const rank = (entry) => {
+    if (entry.output === "lossless") return -1;
     const i = OUTPUTS.findIndex((o) => o.id === entry.output);
     return i < 0 ? OUTPUTS.length : i;
   };
   return [...groups.values()].map((versions) => versions.sort((a, b) => rank(a) - rank(b)));
+}
+
+/**
+ * Library orders. Each has the direction people mostly want (newest and
+ * best first, names A–Z); picking the active one again reverses it.
+ */
+const LIBRARY_SORTS = {
+  added: (a, b) => trackAdded(b) - trackAdded(a),
+  title: (a, b) => compareText(a[0].title, b[0].title),
+  artist: (a, b) => compareText(a[0].artists.join(", "), b[0].artists.join(", "))
+    || compareText(a[0].album, b[0].album) || compareText(a[0].title, b[0].title),
+  album: (a, b) => compareText(a[0].album, b[0].album) || compareText(a[0].title, b[0].title),
+  quality: (a, b) => trackQuality(b) - trackQuality(a),
+};
+
+/** What each order puts first, as [usual, reversed]. */
+const SORT_DIRECTIONS = {
+  added: ["NEWEST", "OLDEST"],
+  title: ["A–Z", "Z–A"],
+  artist: ["A–Z", "Z–A"],
+  album: ["A–Z", "Z–A"],
+  quality: ["BEST", "WORST"],
+};
+
+const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+/** Names in collation order; a missing one (a single's album) sorts last. */
+function compareText(a, b) {
+  if (!a || !b) return Number(!a) - Number(!b);
+  return collator.compare(a, b);
+}
+
+/** When the track first entered the library: its first file, before any conversion. */
+function trackAdded(versions) {
+  return Math.min(...versions.map((v) => v.added_at));
+}
+
+/** The track's best file, by the real quality the server ranks. */
+function trackQuality(versions) {
+  return Math.max(...versions.map((v) => v.quality_rank));
+}
+
+function storedLibrarySort() {
+  let stored = "";
+  try { stored = localStorage.getItem(LIBRARY_SORT_KEY) || ""; } catch { /* storage unavailable */ }
+  const [by, reversed] = stored.split(":");
+  return LIBRARY_SORTS[by] ? { by, reversed: reversed === "reversed" } : { by: "added", reversed: false };
+}
+
+function rememberLibrarySort() {
+  const { by, reversed } = state.librarySort;
+  try { localStorage.setItem(LIBRARY_SORT_KEY, reversed ? `${by}:reversed` : by); } catch { /* storage unavailable */ }
+}
+
+/** Tracks in the chosen order; ties stay newest first. */
+function sortLibrary(tracks) {
+  const { by, reversed } = state.librarySort;
+  const compare = LIBRARY_SORTS[by];
+  const sign = reversed ? -1 : 1;
+  return [...tracks].sort((a, b) => sign * compare(a, b) || LIBRARY_SORTS.added(a, b));
+}
+
+/** Marks the active sort chip, with an arrow saying which way it runs. */
+function renderLibrarySort() {
+  const { by, reversed } = state.librarySort;
+  for (const chip of document.querySelectorAll("#library-sort .chip")) {
+    const active = chip.dataset.sort === by;
+    chip.classList.toggle("active", active);
+    chip.setAttribute("aria-checked", String(active));
+    chip.querySelector(".sort-dir").textContent = active ? ` · ${SORT_DIRECTIONS[by][Number(reversed)]}` : "";
+    chip.title = active ? "Click again to reverse" : "";
+  }
+}
+
+function addedCell(versions) {
+  const added = trackAdded(versions);
+  if (!added) return h("div", { class: "added-cell" }, "--");
+  return h("div", { class: "added-cell", title: `Added ${formatClock(added * 1000)}` },
+    h("span", { class: "added-label" }, "added "), formatAdded(added));
+}
+
+/** A day: TODAY and YESTERDAY read faster than this week's dates. */
+function formatAdded(secs) {
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(new Date()) - day(new Date(secs * 1000))) / 86_400_000);
+  if (days === 0) return "TODAY";
+  if (days === 1) return "YESTERDAY";
+  return formatDate(secs);
 }
 
 /** One library track; with several formats, a menu picks the file the row acts on. */
@@ -1531,11 +1669,14 @@ function libraryRow(versions) {
         ? `crew: ${entry.owned_by.join(", ")}`
         : "crew: nobody (from before accounts)") : null),
     h("div", { class: "album" }, entry.album || "--"),
-    h("div", { class: "path path-cell", title: entry.path }, entry.path),
-    h("div", { class: "quality-cell", title: entry.quality.converted_from ? `Converted from ${entry.quality.converted_from}` : "Not re-encoded" },
+    addedCell(versions),
+    h("div", { class: "quality-cell", title: qualityTitle(entry) },
       picker,
       keepUnits(entry.quality.summary),
       entry.quality.converted_from ? h("div", { class: "converted" }, `from ${entry.quality.converted_from}`) : null,
+      entry.obtained_from && entry.obtained_from.startsWith("slsk://")
+        ? h("div", { class: "converted" }, "via Soulseek") : null,
+      spectrumLine(entry.quality),
       entry.quality.lossless ? h("div", { class: "lossless" }, "lossless") : null),
     h("div", { class: "row-actions" },
       shareButton(entry),
@@ -1543,6 +1684,34 @@ function libraryRow(versions) {
       saveLink(libraryFileUrl(entry.key.provider, entry.key.id, entry.output), String(entry.path), entry.title),
       removeButton(entry, versions.length)));
   return row;
+}
+
+const SPECTRUM_SHORT = {
+  full_band: "spectrum ok",
+  lossy: "fake lossless",
+  upsampled: "upsampled",
+  inconclusive: "spectrum ?",
+};
+
+/** A short spectrum verdict under a file's quality, with the details on hover. */
+function spectrumLine(quality) {
+  const check = quality && quality.spectrum;
+  if (!check) return null;
+  const bad = check.verdict === "lossy" || check.verdict === "upsampled";
+  return h("div", { class: bad ? "spectrum bad" : "spectrum", title: `Spectrum check: ${check.summary}` },
+    SPECTRUM_SHORT[check.verdict] || check.verdict);
+}
+
+/** Hover text of a library row's quality: how the file came to be. */
+function qualityTitle(entry) {
+  const parts = [entry.quality.converted_from ? `Converted from ${entry.quality.converted_from}` : "Not re-encoded"];
+  if (entry.quality.spectrum) parts.push(`Spectrum check: ${entry.quality.spectrum.summary}`);
+  if (entry.obtained_from) {
+    const from = entry.obtained_from.replace(/^slsk:\/\//, "");
+    const [user, ...path] = from.split("/");
+    parts.push(`Quality upgrade: ${path.join("/")} from Soulseek user ${user}`);
+  }
+  return parts.join(" · ");
 }
 
 /**
@@ -1592,14 +1761,22 @@ function removeButton(entry, formats) {
   return btn;
 }
 
-/** Button offering the other formats this library track can be had in. */
+/** Menu choice id of the quality upgrade, never a format id. */
+const UPGRADE_CHOICE = "upgrade";
+
+/**
+ * Button offering the other formats this library track can be had in,
+ * and (for tracks from search) a quality upgrade from Soulseek.
+ */
 function convertButton(entry) {
   const options = entry.convert_to || [];
+  const upgrade = entry.upgrade || null;
   const btn = h("button", {
     class: "icon-btn", type: "button",
-    title: "Convert to another format…", "aria-label": `Convert ${entry.title} to another format`,
+    title: upgrade ? "Convert or upgrade…" : "Convert to another format…",
+    "aria-label": `Convert ${entry.title} to another format`,
     "aria-haspopup": "menu", "aria-expanded": "false",
-    disabled: options.some((o) => o.available) ? null : true,
+    disabled: options.some((o) => o.available) || (upgrade && upgrade.available) ? null : true,
   }, icon("convert"));
   btn.addEventListener("click", () => {
     const choices = options.map((option) => {
@@ -1613,14 +1790,36 @@ function convertButton(entry) {
         disabled: !option.available,
       };
     });
-    openFormatMenu(btn, async (output) => {
+    if (upgrade) {
+      choices.unshift({
+        id: UPGRADE_CHOICE,
+        label: "Quality upgrade",
+        detail: `${upgrade.available ? "" : "Not possible: "}${upgrade.note || ""}`,
+        disabled: !upgrade.available,
+      });
+    }
+    openFormatMenu(btn, async (choice) => {
       btn.disabled = true;
       try {
+        if (choice === UPGRADE_CHOICE) {
+          const res = await api("/api/library/upgrade", {
+            method: "POST",
+            body: { provider: entry.key.provider, id: entry.key.id, from: entry.output },
+          });
+          if (res.job_ids.length) {
+            toast(`Looking for a lossless copy of “${entry.title}” on Soulseek; progress in Downloads`);
+            await pollJobs();
+          } else {
+            toast(res.warning || `Added a lossless copy of “${entry.title}” to your library`);
+            await loadLibrary();
+          }
+          return;
+        }
         await api("/api/library/convert", {
           method: "POST",
-          body: { provider: entry.key.provider, id: entry.key.id, from: entry.output, to: output },
+          body: { provider: entry.key.provider, id: entry.key.id, from: entry.output, to: choice },
         });
-        toast(`Converting “${entry.title}” to ${OUTPUT_SHORT[output] || output}; progress in Downloads`);
+        toast(`Converting “${entry.title}” to ${OUTPUT_SHORT[choice] || choice}; progress in Downloads`);
         await pollJobs();
       } catch (err) {
         toast(err.message, true);
@@ -2997,8 +3196,10 @@ function slskDownloadRow(d) {
       },
     }, "RETRY"));
   }
+  // A quality upgrade is filed under the track it upgrades, as its lossless copy.
+  const output = d.upgrade_for ? "lossless" : "original";
   if (d.track_key && d.destination) {
-    actions.push(saveLink(libraryFileUrl(d.track_key.provider, d.track_key.id, "original"), d.destination, baseName(d.path)));
+    actions.push(saveLink(libraryFileUrl(d.track_key.provider, d.track_key.id, output), d.destination, baseName(d.path)));
   }
   const playable = d.track_key && d.destination && (d.state === "completed" || d.state === "skipped");
   const facts = [];
@@ -3011,6 +3212,7 @@ function slskDownloadRow(d) {
   if (d.quality) {
     facts.push(h("span", {}, "File ", h("b", {}, d.quality.summary),
       d.quality.lossless ? h("span", { class: "lossless" }, " · lossless") : null));
+    if (d.quality.spectrum) facts.push(fact("Spectrum", d.quality.spectrum.summary));
   }
   if (d.artwork) facts.push(fact("Artwork", { file: "embedded", folder: "from folder", none: "none" }[d.artwork] || d.artwork));
   if (d.attempts) facts.push(fact("Attempts", String(d.attempts)));
@@ -3018,7 +3220,7 @@ function slskDownloadRow(d) {
     playable
       ? playableArt({
         key: `slsk:${d.track_key.id}`, title: baseName(d.path), artists: [d.username], artwork: null, duration: null,
-        request: { source: "library", provider: d.track_key.provider, id: d.track_key.id, output: "original" },
+        request: { source: "library", provider: d.track_key.provider, id: d.track_key.id, output },
       }, null)
       : h("span", { class: "art slsk-art", "aria-hidden": "true" }, d.cover ? "IMG" : extOf(d.path).toUpperCase()),
     h("div", { class: "job-main" },
@@ -3026,6 +3228,7 @@ function slskDownloadRow(d) {
         h("div", { class: "title keep-case", title: d.path }, baseName(d.path)),
         h("span", { class: `state ${d.state === "transferring" ? "downloading" : d.state}` }, slskDownloadLabel(d))),
       d.state === "transferring" ? slskProgress(d.bytes, d.size) : null,
+      d.upgrade_for ? h("div", { class: "note" }, `QUALITY UPGRADE for “${d.upgrade_for}”`) : null,
       h("div", { class: "facts" }, facts.filter(Boolean)),
       d.destination ? h("div", { class: "path", title: "Location in library" }, d.destination) : null,
       d.inferred && d.inferred.length
@@ -5334,6 +5537,19 @@ document.addEventListener("DOMContentLoaded", () => {
       $("#search-form").requestSubmit();
     }
   });
+  state.librarySort = storedLibrarySort();
+  renderLibrarySort();
+  for (const chip of document.querySelectorAll("#library-sort .chip")) {
+    chip.addEventListener("click", () => {
+      const sort = state.librarySort;
+      state.librarySort = chip.dataset.sort === sort.by
+        ? { by: sort.by, reversed: !sort.reversed }
+        : { by: chip.dataset.sort, reversed: false };
+      rememberLibrarySort();
+      renderLibrarySort();
+      renderLibrary();
+    });
+  }
   chipGroup("#library-scope .chip", (chip) => {
     state.libraryScope = chip.dataset.scope;
     state.library = [];

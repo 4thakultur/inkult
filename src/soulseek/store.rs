@@ -36,7 +36,7 @@ pub enum StoreError {
 }
 
 /// A download waiting to be resumed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedDownload {
     pub peer: String,
     pub path: String,
@@ -44,6 +44,9 @@ pub struct SavedDownload {
     /// Folder artwork fetched for embedding, not a track for the library.
     #[serde(default)]
     pub cover: bool,
+    /// The library track this file is a quality upgrade for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<super::upgrade::UpgradeTarget>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

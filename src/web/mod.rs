@@ -35,7 +35,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::app::{
     App, AppError, ConvertRequest, EnqueueRequest, LibraryScope, NewUser, RemoveRequest,
-    SettingsUpdate, StreamRequest, UserUpdate,
+    SettingsUpdate, StreamRequest, UpgradeRequest, UserUpdate,
 };
 use crate::auth::{AuthError, Authenticated, Login, LoginOutcome, User, UserId};
 use crate::domain::provider::ProviderKind;
@@ -118,9 +118,11 @@ pub fn router(app: AppState, clients: Arc<ClientPolicy>) -> Router {
         .route("/api/artist", get(artist))
         .route("/api/downloads", get(list_jobs).post(enqueue))
         .route("/api/downloads/finished", delete(clear_finished))
+        .route("/api/downloads/upgrade", post(upgrade_from_search))
         .route("/api/downloads/{id}/cancel", post(cancel_job))
         .route("/api/library", get(library))
         .route("/api/library/convert", post(convert))
+        .route("/api/library/upgrade", post(upgrade))
         .route("/api/library/remove", post(remove_from_library))
         .route("/api/files/{provider}/{id}/{output}", get(download_file))
         .route("/api/stream", post(prepare_stream))
@@ -917,6 +919,25 @@ async fn convert(
     Json(body): Json<ConvertRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     Ok((StatusCode::ACCEPTED, Json(app.convert(&user, body).await?)))
+}
+
+async fn upgrade(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Json(body): Json<UpgradeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok((StatusCode::ACCEPTED, Json(app.upgrade(&user, body).await?)))
+}
+
+async fn upgrade_from_search(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Json(body): Json<EnqueueRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(app.upgrade_from_search(&user, body).await?),
+    ))
 }
 
 async fn remove_from_library(

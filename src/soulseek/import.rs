@@ -14,19 +14,22 @@
 //! sources, which no tag or container can reveal.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use lofty::picture::MimeType;
 
 use super::split_path;
+use super::upgrade::{MAX_LENGTH_DIFFERENCE_SECS, UpgradeTarget};
 use crate::auth::UserId;
 use crate::domain::length::{MaxTrackLength, TooLong};
 use crate::domain::metadata::{MetadataField, ReleaseDate, TrackMetadata};
 use crate::domain::provider::TrackKey;
-use crate::domain::quality::OutputFormat;
-use crate::library::{Library, LibraryEntry, LibraryError};
+use crate::domain::quality::{Codec, OutputFormat, QualityReport, SpectrumVerdict};
+use crate::library::{Library, LibraryEntry, LibraryError, UpgradeOf};
 use crate::metadata::tagging::{self, ExistingTags};
 use crate::metadata::{clean_artists, clean_text, split_artist_title};
+use crate::spectrum;
+use crate::tools::ffmpeg::Ffmpeg;
 
 const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -39,6 +42,16 @@ pub(super) struct ImportRequest {
     pub staged: PathBuf,
     /// The folder's cover image, if it was downloaded.
     pub folder_cover: Option<PathBuf>,
+    pub max_track_length: MaxTrackLength,
+    pub owners: BTreeSet<UserId>,
+}
+
+/// A received file meant as a quality upgrade of a library track.
+pub(super) struct UpgradeImport {
+    pub peer: String,
+    pub path: String,
+    pub staged: PathBuf,
+    pub target: UpgradeTarget,
     pub max_track_length: MaxTrackLength,
     pub owners: BTreeSet<UserId>,
 }
@@ -65,10 +78,19 @@ pub(super) enum ImportError {
     Library(#[from] LibraryError),
     #[error("{0}")]
     Io(String),
+    #[error("not lossless: the file holds {0} audio")]
+    NotLossless(Codec),
+    #[error("not the same recording: it lasts {got}, the library's copy {want}")]
+    LengthMismatch { got: String, want: String },
+    #[error("the track is no longer in the library")]
+    TrackGone,
+    #[error("fake lossless: {0}")]
+    FakeLossless(String),
 }
 
 pub(super) async fn import(
     library: &Library,
+    ffmpeg: &Ffmpeg,
     request: ImportRequest,
 ) -> Result<ImportOutcome, ImportError> {
     // The same file may have been imported meanwhile (by another user).
@@ -118,7 +140,8 @@ pub(super) async fn import(
         let codec =
             tagging::detect_codec(&audio).map_err(|e| ImportError::InvalidMedia(e.to_string()))?;
         // Search replies without a length can't be screened: the file is.
-        max_track_length.check(tagging::probe_duration(&audio).map(|d| d.as_secs_f64()))?;
+        let secs = tagging::probe_duration(&audio).map(|d| d.as_secs_f64());
+        max_track_length.check(secs)?;
         let quality = tagging::probe_quality(&audio, codec)
             .map_err(|e| ImportError::InvalidMedia(e.to_string()))?;
         let existing = tagging::read_existing_tags(&audio)
@@ -133,17 +156,21 @@ pub(super) async fn import(
             .map_err(|e| ImportError::Tagging(e.to_string()))?;
         tagging::probe_quality(&audio, codec)
             .map_err(|e| ImportError::InvalidMedia(format!("after tagging: {e}")))?;
-        Ok::<_, ImportError>((meta, quality, artwork_source))
+        Ok::<_, ImportError>((meta, quality, artwork_source, secs))
     })
     .await
     .map_err(|e| ImportError::Io(e.to_string()));
-    let (meta, quality, artwork) = match prepared {
+    let (meta, mut quality, artwork, secs) = match prepared {
         Ok(Ok(prepared)) => prepared,
         Ok(Err(e)) | Err(e) => {
             let _ = tokio::fs::remove_file(&staged).await;
             return Err(e);
         }
     };
+    // The user picked this file, so a fake is kept, but not called lossless.
+    if let Some(check) = spectrum::check_lossless(ffmpeg, &staged, &quality, secs).await {
+        quality = quality.with_spectrum(check);
+    }
 
     let entry = library
         .import(
@@ -162,11 +189,7 @@ pub(super) async fn import(
             return Err(e.into());
         }
     };
-    let note = entry.quality.lossless.then(|| {
-        "Lossless file. Soulseek uploads are sometimes transcoded from lossy sources; \
-         check the spectrum if it matters"
-            .to_owned()
-    });
+    let note = spectrum_note(&entry.quality);
     Ok(ImportOutcome {
         inferred: meta
             .inferred
@@ -183,6 +206,219 @@ pub(super) async fn import(
         note,
         already_present: false,
     })
+}
+
+/// File a received lossless copy as the [`OutputFormat::Lossless`] format
+/// of the track it upgrades.
+///
+/// Before anything else, the file must prove to be lossless (codec and
+/// spectrum: see `crate::spectrum`) and as long as the track: a peer's
+/// claims, and the name match that picked the file, are not enough. Then
+/// it is tagged as the track. When the library has a copy, that copy's tags
+/// and artwork are copied onto the file (the peer's own tags only fill gaps
+/// such as album or ISRC; see [`tagging::adopt_tags`]); an upgrade asked for
+/// from a search result uses the provider's metadata and cover instead,
+/// over the peer's tags.
+pub(super) async fn import_upgrade(
+    library: &Library,
+    ffmpeg: &Ffmpeg,
+    request: UpgradeImport,
+) -> Result<ImportOutcome, ImportError> {
+    let key = request.target.key.clone();
+    if library.find(&key, OutputFormat::Lossless).await.is_some()
+        && let Some(entry) = library
+            .add_owners(&key, OutputFormat::Lossless, &request.owners)
+            .await
+    {
+        let _ = tokio::fs::remove_file(&request.staged).await;
+        return Ok(ImportOutcome {
+            entry,
+            artwork: "file",
+            inferred: Vec::new(),
+            note: Some("A lossless copy was already in the library; added to yours".into()),
+            already_present: true,
+        });
+    }
+    let track = library.best_source(&key).await;
+    if track.is_none() && request.target.metadata.is_none() {
+        let _ = tokio::fs::remove_file(&request.staged).await;
+        return Err(ImportError::TrackGone);
+    }
+
+    let extension: String = super::extension(&request.path)
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    let staged = request.staged.with_extension(&extension);
+    tokio::fs::rename(&request.staged, &staged)
+        .await
+        .map_err(|e| ImportError::Io(format!("cannot prepare the file: {e}")))?;
+    let result = verify_and_file(library, ffmpeg, &request, track, &staged, &extension).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&staged).await;
+    }
+    result
+}
+
+async fn verify_and_file(
+    library: &Library,
+    ffmpeg: &Ffmpeg,
+    request: &UpgradeImport,
+    track: Option<(LibraryEntry, PathBuf)>,
+    staged: &Path,
+    extension: &str,
+) -> Result<ImportOutcome, ImportError> {
+    let audio = staged.to_path_buf();
+    let want_secs = request.target.duration_ms.map(|ms| ms as f64 / 1000.0);
+    let max_track_length = request.max_track_length;
+    let (codec, quality, secs) = tokio::task::spawn_blocking(move || {
+        let codec =
+            tagging::detect_codec(&audio).map_err(|e| ImportError::InvalidMedia(e.to_string()))?;
+        if !codec.is_lossless() {
+            return Err(ImportError::NotLossless(codec));
+        }
+        let secs = tagging::probe_duration(&audio).map(|d| d.as_secs_f64());
+        max_track_length.check(secs)?;
+        if let (Some(got), Some(want)) = (secs, want_secs)
+            && (got - want).abs() > MAX_LENGTH_DIFFERENCE_SECS
+        {
+            return Err(ImportError::LengthMismatch {
+                got: clock(got),
+                want: clock(want),
+            });
+        }
+        let quality = tagging::probe_quality(&audio, codec)
+            .map_err(|e| ImportError::InvalidMedia(e.to_string()))?;
+        Ok::<_, ImportError>((codec, quality, secs))
+    })
+    .await
+    .map_err(|e| ImportError::Io(e.to_string()))??;
+
+    let mut quality = quality;
+    if let Some(check) = spectrum::check_lossless(ffmpeg, staged, &quality, secs).await {
+        if check.verdict == SpectrumVerdict::Lossy {
+            return Err(ImportError::FakeLossless(check.summary));
+        }
+        quality = quality.with_spectrum(check);
+    }
+
+    let artwork = match &request.target.artwork_file {
+        Some(path) if track.is_none() => read_cover(path).await,
+        _ => None,
+    };
+    let audio = staged.to_path_buf();
+    let library_copy = track.as_ref().map(|(entry, file)| {
+        (
+            file.clone(),
+            entry.key.to_string(),
+            entry.source_url.clone(),
+        )
+    });
+    let metadata = request.target.metadata.clone();
+    let (artwork_embedded, filled) = tokio::task::spawn_blocking(move || {
+        let tagged = match (library_copy, metadata) {
+            (Some((file, key, url)), _) => {
+                let adopted = tagging::adopt_tags(&file, &audio, &key, &url)
+                    .map_err(|e| ImportError::Tagging(e.to_string()))?;
+                (adopted.artwork, adopted.filled)
+            }
+            (None, Some(meta)) => {
+                let had_cover = artwork.is_some();
+                // Fields the provider has no value for keep the peer's tags.
+                tagging::write_tags(&audio, &meta, artwork)
+                    .map_err(|e| ImportError::Tagging(e.to_string()))?;
+                let has_cover = had_cover
+                    || tagging::read_existing_tags(&audio)
+                        .map(|t| t.has_front_cover)
+                        .unwrap_or(false);
+                (has_cover, Vec::new())
+            }
+            (None, None) => return Err(ImportError::TrackGone),
+        };
+        tagging::probe_quality(&audio, codec)
+            .map_err(|e| ImportError::InvalidMedia(format!("after tagging: {e}")))?;
+        Ok::<_, ImportError>(tagged)
+    })
+    .await
+    .map_err(|e| ImportError::Io(e.to_string()))??;
+
+    let obtained_from = format!(
+        "slsk://{}/{}",
+        request.peer,
+        request.path.replace('\\', "/")
+    );
+    let of = match (&track, &request.target.metadata) {
+        (Some((entry, _)), _) => UpgradeOf::Track(entry),
+        (None, Some(meta)) => UpgradeOf::New(meta),
+        (None, None) => return Err(ImportError::TrackGone),
+    };
+    let entry = library
+        .import_upgrade(
+            staged.to_path_buf(),
+            of,
+            quality,
+            extension,
+            obtained_from,
+            request.owners.clone(),
+        )
+        .await?;
+    if let Some(cover) = &request.target.artwork_file {
+        let _ = tokio::fs::remove_file(cover).await;
+    }
+    let mut note = format!(
+        "Lossless upgrade of “{}”, tagged like {}",
+        request.target.title,
+        if track.is_some() {
+            "the library's copy"
+        } else {
+            "the track at its source"
+        }
+    );
+    if !filled.is_empty() {
+        note.push_str(&format!(" (+ {} from the file)", filled.join(", ")));
+    }
+    if let Some(extra) = spectrum_note(&entry.quality) {
+        note.push_str(". ");
+        note.push_str(&extra);
+    }
+    Ok(ImportOutcome {
+        entry,
+        artwork: if artwork_embedded { "file" } else { "none" },
+        inferred: Vec::new(),
+        note: Some(note),
+        already_present: false,
+    })
+}
+
+/// What a received file's spectrum check means for the user.
+fn spectrum_note(quality: &QualityReport) -> Option<String> {
+    let check = quality.spectrum.as_ref();
+    match check.map(|c| c.verdict) {
+        Some(SpectrumVerdict::Lossy) => Some(format!(
+            "Not really lossless: {}. Kept because you chose it; it is not marked lossless",
+            check.map_or("", |c| c.summary.as_str())
+        )),
+        Some(SpectrumVerdict::Upsampled) => Some(format!(
+            "Spectrum: {}",
+            check.map_or("", |c| c.summary.as_str())
+        )),
+        Some(SpectrumVerdict::FullBand) => {
+            Some("Spectrum check passed: no sign of a lossy source".to_owned())
+        }
+        Some(SpectrumVerdict::Inconclusive) | None if quality.lossless => Some(
+            "Lossless file, but its spectrum gave no verdict; Soulseek uploads are \
+             sometimes transcoded from lossy sources"
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
+
+/// "4:29" for messages.
+fn clock(secs: f64) -> String {
+    let secs = secs.round() as u64;
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 async fn read_cover(path: &std::path::Path) -> Option<(Vec<u8>, MimeType)> {

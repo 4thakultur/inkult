@@ -182,6 +182,11 @@ pub enum OutputFormat {
     /// loss beyond the source, at roughly 10 MB per minute.
     #[serde(rename = "aiff")]
     Aiff,
+    /// A lossless copy of the track found elsewhere (on Soulseek) by a
+    /// quality upgrade. Never downloaded from the track's own provider or
+    /// made by converting: no local file or lossy stream can become one.
+    #[serde(rename = "lossless")]
+    Lossless,
 }
 
 /// A re-encode applied after download.
@@ -230,6 +235,7 @@ impl OutputFormat {
             OutputFormat::Aac => "aac",
             OutputFormat::Mp3_320 => "mp3_320",
             OutputFormat::Aiff => "aiff",
+            OutputFormat::Lossless => "lossless",
         }
     }
 
@@ -239,12 +245,13 @@ impl OutputFormat {
             OutputFormat::Aac => "AAC (M4A), no re-encoding",
             OutputFormat::Mp3_320 => "MP3 320 kbps",
             OutputFormat::Aiff => "AIFF",
+            OutputFormat::Lossless => "Lossless (quality upgrade)",
         }
     }
 
     pub fn conversion(self) -> Option<Conversion> {
         match self {
-            OutputFormat::Original | OutputFormat::Aac => None,
+            OutputFormat::Original | OutputFormat::Aac | OutputFormat::Lossless => None,
             OutputFormat::Mp3_320 => Some(Conversion::Mp3Cbr320),
             OutputFormat::Aiff => Some(Conversion::AiffPcm16),
         }
@@ -264,6 +271,9 @@ impl OutputFormat {
                 "AAC without re-encoding needs the source's own AAC stream; download it instead"
                     .into(),
             ),
+            OutputFormat::Lossless => Err(
+                "a lossless copy cannot be made from a library file; use Quality upgrade".into(),
+            ),
             OutputFormat::Mp3_320 | OutputFormat::Aiff => {
                 let conversion = self.conversion().ok_or("no conversion for this format")?;
                 if source.codec == conversion.codec() {
@@ -279,12 +289,20 @@ impl OutputFormat {
     }
 
     /// All formats, in menu order.
-    pub const ALL: [OutputFormat; 4] = [
+    pub const ALL: [OutputFormat; 5] = [
         OutputFormat::Original,
         OutputFormat::Aac,
         OutputFormat::Mp3_320,
         OutputFormat::Aiff,
+        OutputFormat::Lossless,
     ];
+
+    /// Whether a provider download can produce this format. A lossless
+    /// upgrade only comes from a quality upgrade: labelling a provider's
+    /// lossy stream "lossless" would be a lie.
+    pub fn is_downloadable(self) -> bool {
+        self != OutputFormat::Lossless
+    }
 
     /// The source rendition to download for this output. Conversions always
     /// start from the best source, since every generation of lossy encoding
@@ -323,6 +341,35 @@ pub struct QualityReport {
     #[serde(default)]
     pub converted_from: Option<String>,
     pub summary: String,
+    /// Spectrum check of a file in a lossless codec (see `crate::spectrum`).
+    /// A file found to be made from lossy audio is not `lossless`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spectrum: Option<SpectrumCheck>,
+}
+
+/// What the spectrum of a lossless-codec file says about its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpectrumVerdict {
+    /// Content up to the top of the range: no sign of lossy encoding.
+    FullBand,
+    /// A lossy encoder's cutoff: decoded from a lossy file.
+    Lossy,
+    /// High-resolution container around CD-rate audio.
+    Upsampled,
+    /// Too quiet or too dull at the top to tell.
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpectrumCheck {
+    pub verdict: SpectrumVerdict,
+    /// Where the audio content ends, when found.
+    pub cutoff_hz: Option<u32>,
+    /// Bitrate of the lossy encode a cutoff suggests (rough; for ranking).
+    pub estimated_kbps: Option<u32>,
+    /// For people, e.g. "audio stops sharply at 16.0 kHz …".
+    pub summary: String,
 }
 
 impl QualityReport {
@@ -345,7 +392,25 @@ impl QualityReport {
             transcoded: false,
             converted_from: None,
             summary: describe(codec, bitrate_kbps, sample_rate_hz, bit_depth),
+            spectrum: None,
         }
+    }
+
+    /// Record a spectrum check. A file shown to be decoded from lossy audio
+    /// keeps its codec but is no longer called lossless.
+    pub fn with_spectrum(mut self, check: SpectrumCheck) -> Self {
+        if check.verdict == SpectrumVerdict::Lossy {
+            self.lossless = false;
+        }
+        self.spectrum = Some(check);
+        self
+    }
+
+    /// Whether the spectrum check found lossy audio in this file.
+    pub fn spectrum_lossy(&self) -> bool {
+        self.spectrum
+            .as_ref()
+            .is_some_and(|s| s.verdict == SpectrumVerdict::Lossy)
     }
 
     /// Mark this file as re-encoded from `source`. A lossless container made
@@ -375,10 +440,39 @@ impl QualityReport {
     /// lossless containers (decoding added no loss), then codec-weighted
     /// bitrate, the same perceptual ordering used to pick download sources
     /// (Opus at 103 kbps beats AAC at 127 kbps).
+    ///
+    /// A lossless container shown by its spectrum to hold decoded lossy
+    /// audio ranks as the lossy encode it came from, so a fake FLAC of an
+    /// MP3 128 is not preferred over a real Opus 135.
     pub fn source_rank(&self) -> (bool, bool, u32) {
-        let weighted =
-            f64::from(self.bitrate_kbps.unwrap_or(0)) * self.codec.lossy_efficiency() * 10.0;
-        (!self.transcoded, self.codec.is_lossless(), weighted as u32)
+        let (kbps, efficiency) = match self.spectrum.as_ref().and_then(|s| s.estimated_kbps) {
+            Some(estimate) if self.spectrum_lossy() => (estimate, 1.0),
+            _ => (
+                self.bitrate_kbps.unwrap_or(0),
+                self.codec.lossy_efficiency(),
+            ),
+        };
+        let weighted = f64::from(kbps) * efficiency * 10.0;
+        let lossless = self.codec.is_lossless() && !self.spectrum_lossy();
+        (!self.transcoded, lossless, weighted as u32)
+    }
+
+    /// Orders files by how much of the recording they actually carry, for
+    /// sorting a library by quality (higher is better): lossless audio
+    /// first, by bit depth then sample rate; then lossy originals by
+    /// codec-weighted bitrate; then lossy re-encodes, whose real quality is
+    /// bounded by a source they no longer carry, however high their own
+    /// bitrate (an MP3 320 made from Opus 132 is not better than the Opus).
+    pub fn library_rank(&self) -> u64 {
+        const TIER: u64 = 1_000_000_000_000;
+        if self.lossless {
+            let depth = u64::from(self.bit_depth.unwrap_or(0));
+            let rate = u64::from(self.sample_rate_hz.unwrap_or(0)).min(9_999_999);
+            return 3 * TIER + depth * 10_000_000 + rate;
+        }
+        let (original, _, weighted) = self.source_rank();
+        let tier = if original { 2 } else { 1 };
+        tier * TIER + u64::from(weighted)
     }
 }
 
@@ -518,6 +612,7 @@ mod tests {
             OutputFormat::Aac,
             OutputFormat::Mp3_320,
             OutputFormat::Aiff,
+            OutputFormat::Lossless,
         ] {
             assert_eq!(output.slug().parse::<OutputFormat>().unwrap(), output);
             assert_eq!(
@@ -591,6 +686,10 @@ mod tests {
                 .library_conversion(&report(Codec::Pcm, 1536))
                 .is_err()
         );
+        let flac = report(Codec::Flac, 900);
+        assert!(OutputFormat::Lossless.library_conversion(&flac).is_err());
+        assert!(!OutputFormat::Lossless.is_downloadable());
+        assert!(OutputFormat::Original.is_downloadable());
     }
 
     #[test]
@@ -618,6 +717,50 @@ mod tests {
         // The original beats any conversion, however high its bitrate.
         assert!(opus.source_rank() > mp3.source_rank());
         assert!(aiff.source_rank() > mp3.source_rank());
+    }
+
+    #[test]
+    fn library_rank_orders_by_real_quality() {
+        let opus = report(Codec::Opus, 132);
+        let mp3 = report(Codec::Mp3, 320).converted_from_file(&opus);
+        let aiff = report(Codec::Pcm, 1536).converted_from_file(&opus);
+        let flac = report(Codec::Flac, 900);
+        let mut hires = report(Codec::Flac, 2500);
+        hires.bit_depth = Some(24);
+
+        assert!(hires.library_rank() > flac.library_rank());
+        // A lossless copy of lossless audio is still lossless.
+        let flac_aiff = report(Codec::Pcm, 1536).converted_from_file(&flac);
+        assert_eq!(flac_aiff.library_rank(), flac.library_rank());
+        assert!(flac.library_rank() > report(Codec::Aac, 256).library_rank());
+        assert!(report(Codec::Aac, 256).library_rank() > opus.library_rank());
+        // Re-encodes of lossy audio rank below every lossy original.
+        assert!(report(Codec::Mp3, 128).library_rank() > mp3.library_rank());
+        assert!(opus.library_rank() > aiff.library_rank());
+    }
+
+    #[test]
+    fn spectrum_exposes_fake_lossless() {
+        let flac = report(Codec::Flac, 900);
+        let fake = flac.clone().with_spectrum(SpectrumCheck {
+            verdict: SpectrumVerdict::Lossy,
+            cutoff_hz: Some(16_000),
+            estimated_kbps: Some(128),
+            summary: "cut".into(),
+        });
+        assert!(!fake.lossless);
+        assert!(fake.library_rank() < flac.library_rank());
+        assert!(fake.source_rank() < report(Codec::Opus, 135).source_rank());
+        assert!(fake.library_rank() < report(Codec::Aac, 256).library_rank());
+
+        let real = flac.clone().with_spectrum(SpectrumCheck {
+            verdict: SpectrumVerdict::FullBand,
+            cutoff_hz: Some(21_900),
+            estimated_kbps: None,
+            summary: "full".into(),
+        });
+        assert!(real.lossless);
+        assert_eq!(real.library_rank(), flac.library_rank());
     }
 
     #[test]

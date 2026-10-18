@@ -251,20 +251,31 @@ impl Ffmpeg {
     /// YouTube "art track" thumbnails are 16:9 frames with the square album
     /// cover in the middle; cropping recovers the actual cover.
     pub async fn crop_to_square(&self, input: &Path, output: &Path) -> Result<(), ToolError> {
+        self.write_jpeg(input, output, Some("crop='min(iw,ih)':'min(iw,ih)'"))
+            .await
+    }
+
+    /// Re-encode an image (e.g. a WebP thumbnail) as JPEG, which every
+    /// player can show as embedded artwork. `output` must end in `.jpg`.
+    pub async fn image_to_jpeg(&self, input: &Path, output: &Path) -> Result<(), ToolError> {
+        self.write_jpeg(input, output, None).await
+    }
+
+    async fn write_jpeg(
+        &self,
+        input: &Path,
+        output: &Path,
+        filter: Option<&str>,
+    ) -> Result<(), ToolError> {
         let mut cmd = Command::new(&self.program);
         cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
             .args(local_input(IMAGE_DEMUXERS))
             .arg("-i")
-            .arg(input)
-            .args([
-                "-vf",
-                "crop='min(iw,ih)':'min(iw,ih)'",
-                "-frames:v",
-                "1",
-                "-q:v",
-                "2",
-            ])
-            .arg(output);
+            .arg(input);
+        if let Some(filter) = filter {
+            cmd.args(["-vf", filter]);
+        }
+        cmd.args(["-frames:v", "1", "-q:v", "2"]).arg(output);
         super::run(TOOL, cmd, Duration::from_secs(60), 64 * 1024).await?;
         Ok(())
     }
@@ -416,6 +427,19 @@ impl Ffmpeg {
             .await
     }
 
+    /// Like [`Ffmpeg::decode_mono`], as 32-bit float samples: for analysis
+    /// that must not have 16-bit quantization noise added (it would bury
+    /// the quiet ultrasonic content of high-resolution files).
+    pub async fn decode_mono_f32(
+        &self,
+        input: StreamInput<'_>,
+        sample_rate: u32,
+        sink: impl FnMut(&[f32]),
+    ) -> Result<u64, ToolError> {
+        self.decode_mono_inner(DecodeInput::Stream(input), sample_rate, sink)
+            .await
+    }
+
     /// Like [`Ffmpeg::decode_mono`], for audio read from `reader` in the
     /// container `demuxer` (e.g. `aac` for ADTS). Only that demuxer and
     /// standard input may be opened. An error reading `reader` fails the
@@ -434,11 +458,11 @@ impl Ffmpeg {
         self.decode_mono_inner(input, sample_rate, sink).await
     }
 
-    async fn decode_mono_inner(
+    async fn decode_mono_inner<S: PcmSample>(
         &self,
         input: DecodeInput<'_>,
         sample_rate: u32,
-        mut sink: impl FnMut(&[i16]),
+        mut sink: impl FnMut(&[S]),
     ) -> Result<u64, ToolError> {
         let _slot = tokio::time::timeout(
             ANALYSIS_SLOT_WAIT,
@@ -454,7 +478,7 @@ impl Ffmpeg {
         cmd.args(["-map", "0:a:0", "-vn", "-sn", "-dn", "-ac", "1"])
             .arg("-ar")
             .arg(sample_rate.to_string())
-            .args(["-c:a", "pcm_s16le", "-f", "s16le", "pipe:1"])
+            .args(["-c:a", S::CODEC, "-f", S::FORMAT, "pipe:1"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -472,9 +496,9 @@ impl Ffmpeg {
         let work = async {
             let stderr_task = tokio::spawn(read_tail(stderr, 8 * 1024, TOOL));
             let mut buf = vec![0u8; 64 * 1024];
-            let mut samples = Vec::with_capacity(buf.len() / 2);
+            let mut samples = Vec::with_capacity(buf.len() / S::BYTES);
             // A read may end in the middle of a sample.
-            let mut carry: Option<u8> = None;
+            let mut carry: Vec<u8> = Vec::with_capacity(S::BYTES);
             let mut total: u64 = 0;
             loop {
                 let read = stdout
@@ -486,13 +510,18 @@ impl Ffmpeg {
                 }
                 samples.clear();
                 let mut bytes = &buf[..read];
-                if let Some(low) = carry.take() {
-                    samples.push(i16::from_le_bytes([low, bytes[0]]));
-                    bytes = &bytes[1..];
+                if !carry.is_empty() {
+                    let missing = (S::BYTES - carry.len()).min(bytes.len());
+                    carry.extend_from_slice(&bytes[..missing]);
+                    bytes = &bytes[missing..];
+                    if carry.len() == S::BYTES {
+                        samples.push(S::from_le(&carry));
+                        carry.clear();
+                    }
                 }
-                let pairs = bytes.chunks_exact(2);
-                carry = pairs.remainder().first().copied();
-                samples.extend(pairs.map(|p| i16::from_le_bytes([p[0], p[1]])));
+                let whole = bytes.chunks_exact(S::BYTES);
+                carry.extend_from_slice(whole.remainder());
+                samples.extend(whole.map(S::from_le));
                 total += samples.len() as u64;
                 sink(&samples);
             }
@@ -528,6 +557,33 @@ impl Ffmpeg {
     }
 }
 
+/// A raw little-endian PCM sample type ffmpeg can write to a pipe.
+trait PcmSample: Copy {
+    const CODEC: &'static str;
+    const FORMAT: &'static str;
+    const BYTES: usize;
+    /// `bytes` is exactly `BYTES` long.
+    fn from_le(bytes: &[u8]) -> Self;
+}
+
+impl PcmSample for i16 {
+    const CODEC: &'static str = "pcm_s16le";
+    const FORMAT: &'static str = "s16le";
+    const BYTES: usize = 2;
+    fn from_le(bytes: &[u8]) -> Self {
+        i16::from_le_bytes([bytes[0], bytes[1]])
+    }
+}
+
+impl PcmSample for f32 {
+    const CODEC: &'static str = "pcm_f32le";
+    const FORMAT: &'static str = "f32le";
+    const BYTES: usize = 4;
+    fn from_le(bytes: &[u8]) -> Self {
+        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+}
+
 /// "ffmpeg version 7.1.1-1 Copyright (c) ..." → "7.1.1-1".
 fn parse_version(output: &str) -> String {
     let first_line = output.lines().next().unwrap_or_default().trim();
@@ -541,6 +597,47 @@ fn parse_version(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs the real ffmpeg (as the Soulseek end-to-end tests do).
+    #[tokio::test]
+    async fn covers_become_jpeg_with_or_without_cropping() {
+        let dir = tempfile::tempdir().unwrap();
+        let thumbnail = dir.path().join("thumb.download");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+            .args(["color=red:s=160x90", "-frames:v", "1", "-f", "webp"])
+            .arg(&thumbnail)
+            .status()
+            .expect("ffmpeg runs");
+        assert!(made.success());
+        let ffmpeg = Ffmpeg::new("ffmpeg");
+        for (crop, size) in [(false, (160, 90)), (true, (90, 90))] {
+            let out = dir.path().join(format!("cover-{crop}.jpg"));
+            if crop {
+                ffmpeg.crop_to_square(&thumbnail, &out).await.unwrap();
+            } else {
+                ffmpeg.image_to_jpeg(&thumbnail, &out).await.unwrap();
+            }
+            let data = std::fs::read(&out).unwrap();
+            assert!(data.starts_with(&[0xFF, 0xD8, 0xFF]), "JPEG");
+            let probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "csv=p=0",
+                ])
+                .arg(&out)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&probe.stdout).trim(),
+                format!("{},{}", size.0, size.1)
+            );
+        }
+    }
 
     #[test]
     fn extracts_version_token() {

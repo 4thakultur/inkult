@@ -28,7 +28,12 @@ const SHARE_PATH: &str = "@@abcde\\Music\\Bicep\\Bicep (2017) [WAV]\\03 - Glue.w
 
 /// A valid 16-bit stereo 44.1 kHz WAV with 0.1 s of silence.
 fn silent_wav() -> Vec<u8> {
-    let data_len: u32 = 4410 * 4;
+    silent_wav_of(4410)
+}
+
+/// A valid 16-bit stereo 44.1 kHz WAV of `frames` frames of silence.
+fn silent_wav_of(frames: u32) -> Vec<u8> {
+    let data_len: u32 = frames * 4;
     let mut wav = Vec::new();
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36 + data_len).to_le_bytes());
@@ -173,6 +178,7 @@ async fn harness() -> Harness {
                 allow_loopback: true,
             },
             Arc::clone(&library),
+            Arc::new(crate::tools::ffmpeg::Ffmpeg::new("ffmpeg")),
         )
         .await
         .unwrap(),
@@ -395,6 +401,389 @@ async fn search_queue_resume_and_import() {
 }
 
 #[tokio::test]
+async fn quality_upgrade_finds_verifies_and_files_a_lossless_copy() {
+    let mut h = harness().await;
+    // A track from search, as the library has it: the YouTube copy.
+    let original = silent_wav_of(44_100 * 7);
+    let staged = h._dirs.1.path().join("media.wav");
+    std::fs::write(&staged, &original).unwrap();
+    let meta = crate::domain::metadata::TrackMetadata {
+        provider: crate::domain::provider::ProviderKind::YouTube,
+        provider_track_id: "abc".into(),
+        source_url: "https://music.youtube.com/watch?v=abc".into(),
+        title: "Glue".into(),
+        artists: vec!["Bicep".into()],
+        album: None,
+        album_artist: None,
+        track_number: None,
+        disc_number: None,
+        release_date: None,
+        genres: vec![],
+        description: None,
+        copyright: None,
+        label: None,
+        isrc: None,
+        artwork_url: None,
+        duration_secs: None,
+        inferred: vec![],
+    };
+    crate::metadata::tagging::write_tags(&staged, &meta, None).unwrap();
+    let quality = crate::metadata::tagging::probe_quality(&staged, Codec::Pcm).unwrap();
+    let track = h
+        .library
+        .import(
+            staged,
+            &meta,
+            quality,
+            OutputFormat::Original,
+            "wav",
+            BTreeSet::from([ME]),
+        )
+        .await
+        .unwrap();
+
+    h.soulseek
+        .sign_in(ME, "digger", "secret", false)
+        .await
+        .unwrap();
+    let session = h.soulseek.require(ME).unwrap();
+    let wanted = super::UpgradeWanted {
+        key: track.key.clone(),
+        title: "Glue (Official Video)".into(),
+        artists: vec!["Bicep".into()],
+        duration_secs: Some(7.0),
+        metadata: None,
+        artwork_file: None,
+    };
+    let upgrade = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            session.upgrade(&wanted, &cancel, &|_| {}).await
+        }
+    });
+
+    let body = next_server_message(&mut h.seen, server_code::FILE_SEARCH).await;
+    let mut r = Reader::new(&body);
+    let token = r.u32().unwrap();
+    assert_eq!(r.string().unwrap(), "bicep glue");
+
+    // A peer has the track, and a remix of it that must not be taken.
+    let received = silent_wav_of(44_100 * 7 + 2_000);
+    let size = received.len() as u64;
+    let path = "@@x\\Music\\Bicep\\Bicep (2017)\\03 - Glue.wav";
+    let attrs = FileAttrs {
+        duration_secs: Some(7),
+        sample_rate_hz: Some(44_100),
+        bit_depth: Some(16),
+        ..FileAttrs::default()
+    };
+    let mut inbound = TcpStream::connect(("127.0.0.1", h.our_port)).await.unwrap();
+    let init = PeerInit::PeerInit {
+        username: "alice".into(),
+        kind: Some(super::messages::ConnKind::Peer),
+    };
+    inbound.write_all(&init.encode()).await.unwrap();
+    let reply = PeerMessage::SearchReply(SearchReply {
+        username: "alice".into(),
+        token,
+        files: vec![
+            SharedFile {
+                name: "@@x\\Music\\Bicep\\Glue (Hammer Remix).wav".into(),
+                size,
+                attrs: attrs.clone(),
+            },
+            SharedFile {
+                name: path.into(),
+                size,
+                attrs,
+            },
+        ],
+        slot_free: true,
+        avg_speed: 100_000,
+        queue_length: 0,
+    });
+    inbound.write_all(&reply.encode()).await.unwrap();
+    drop(inbound);
+
+    // After collecting replies, the upgrade asks alice for the right file.
+    let (mut conn, _) = tokio::time::timeout(Duration::from_secs(30), h.peer_listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    read_init(&mut conn).await;
+    assert_eq!(
+        read_peer_message(&mut conn).await,
+        PeerMessage::QueueUpload {
+            filename: path.into()
+        }
+    );
+    read_peer_message(&mut conn).await; // place in queue
+    conn.write_all(
+        &PeerMessage::TransferRequest {
+            direction: 1,
+            token: 777,
+            filename: path.into(),
+            size: Some(size),
+        }
+        .encode(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_peer_message(&mut conn).await,
+        PeerMessage::TransferResponse { allowed: true, .. }
+    ));
+    let mut file_conn = TcpStream::connect(("127.0.0.1", h.our_port)).await.unwrap();
+    let init = PeerInit::PeerInit {
+        username: "alice".into(),
+        kind: Some(super::messages::ConnKind::File),
+    };
+    file_conn.write_all(&init.encode()).await.unwrap();
+    file_conn.write_all(&777u32.to_le_bytes()).await.unwrap();
+    assert_eq!(file_conn.read_u64_le().await.unwrap(), 0);
+    file_conn.write_all(&received).await.unwrap();
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), file_conn.read_to_end(&mut rest))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let entry = tokio::time::timeout(Duration::from_secs(10), upgrade)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // Filed under the track, as its lossless format, next to it.
+    assert_eq!(entry.key, track.key);
+    assert_eq!(entry.output, OutputFormat::Lossless);
+    assert!(entry.quality.lossless);
+    assert_eq!(entry.title, "Glue");
+    assert_eq!(entry.source_url, track.source_url);
+    assert_eq!(
+        entry.obtained_from.as_deref(),
+        Some("slsk://alice/@@x/Music/Bicep/Bicep (2017)/03 - Glue.wav")
+    );
+    assert_eq!(entry.owners, BTreeSet::from([ME]));
+    assert_eq!(
+        entry.path,
+        std::path::PathBuf::from("Bicep/Singles/Glue (2).wav")
+    );
+    let download = session
+        .downloads()
+        .into_iter()
+        .find(|d| d.upgrade_for.is_some())
+        .unwrap();
+    assert_eq!(
+        download.state,
+        DownloadState::Completed,
+        "{:?}",
+        download.error
+    );
+    assert_eq!(download.track_key.as_ref(), Some(&track.key));
+    // The library's copy stays where it was.
+    let kept = h
+        .library
+        .find(&track.key, OutputFormat::Original)
+        .await
+        .unwrap();
+    assert_eq!(kept.path, track.path);
+
+    h.soulseek.shutdown().await;
+}
+
+/// 7 s of pink noise as a 16-bit stereo 44.1 kHz WAV, made by ffmpeg
+/// (needed by the spectrum check anyway), cut off sharply at `lowpass_hz`
+/// like a lossy encoder would, if set.
+fn noise_wav(lowpass_hz: Option<u32>) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("noise.wav");
+    let mut graph = "anoisesrc=d=7:c=pink:a=0.3:r=44100".to_owned();
+    if let Some(hz) = lowpass_hz {
+        graph.push_str(&format!(",firequalizer=gain='if(lt(f,{hz}),0,-120)'"));
+    }
+    let status = std::process::Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", &graph])
+        .args(["-ac", "2", "-c:a", "pcm_s16le"])
+        .arg(&out)
+        .status()
+        .expect("ffmpeg runs");
+    assert!(status.success());
+    std::fs::read(out).unwrap()
+}
+
+/// Play the uploading peer for one requested file: accept our connection,
+/// take the queue request, offer the upload and send `data`.
+async fn upload_one(h: &mut Harness, user: &str, path: &str, data: &[u8], token: u32) {
+    let (mut conn, _) = tokio::time::timeout(Duration::from_secs(40), h.peer_listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    read_init(&mut conn).await;
+    assert_eq!(
+        read_peer_message(&mut conn).await,
+        PeerMessage::QueueUpload {
+            filename: path.into()
+        },
+        "{user} is asked for the expected file"
+    );
+    read_peer_message(&mut conn).await; // place in queue
+    conn.write_all(
+        &PeerMessage::TransferRequest {
+            direction: 1,
+            token,
+            filename: path.into(),
+            size: Some(data.len() as u64),
+        }
+        .encode(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_peer_message(&mut conn).await,
+        PeerMessage::TransferResponse { allowed: true, .. }
+    ));
+    let mut file_conn = TcpStream::connect(("127.0.0.1", h.our_port)).await.unwrap();
+    let init = PeerInit::PeerInit {
+        username: user.into(),
+        kind: Some(super::messages::ConnKind::File),
+    };
+    file_conn.write_all(&init.encode()).await.unwrap();
+    file_conn.write_all(&token.to_le_bytes()).await.unwrap();
+    assert_eq!(file_conn.read_u64_le().await.unwrap(), 0);
+    file_conn.write_all(data).await.unwrap();
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), file_conn.read_to_end(&mut rest))
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn quality_upgrade_rejects_fake_lossless_and_tries_the_next_copy() {
+    let mut h = harness().await;
+    h.soulseek
+        .sign_in(ME, "digger", "secret", false)
+        .await
+        .unwrap();
+    let session = h.soulseek.require(ME).unwrap();
+    // Upgraded straight from a search result: nothing in the library yet.
+    let meta = crate::domain::metadata::TrackMetadata {
+        provider: crate::domain::provider::ProviderKind::SoundCloud,
+        provider_track_id: "42".into(),
+        source_url: "https://soundcloud.com/bicep/glue".into(),
+        title: "Glue".into(),
+        artists: vec!["Bicep".into()],
+        album: None,
+        album_artist: None,
+        track_number: None,
+        disc_number: None,
+        release_date: None,
+        genres: vec!["Electronic".into()],
+        description: None,
+        copyright: None,
+        label: None,
+        isrc: None,
+        artwork_url: None,
+        duration_secs: Some(7.0),
+        inferred: vec![],
+    };
+    let wanted = super::UpgradeWanted {
+        key: meta.key(),
+        title: meta.title.clone(),
+        artists: meta.artists.clone(),
+        duration_secs: Some(7.0),
+        metadata: Some(meta.clone()),
+        artwork_file: None,
+    };
+    let upgrade = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            session.upgrade(&wanted, &cancel, &|_| {}).await
+        }
+    });
+    let body = next_server_message(&mut h.seen, server_code::FILE_SEARCH).await;
+    let token = Reader::new(&body).u32().unwrap();
+
+    // alice ranks first (shorter queue) but has an MP3 decoded to WAV.
+    let fake = noise_wav(Some(16_000));
+    let real = noise_wav(None);
+    let (fake_path, real_path) = ("@@a\\Bicep - Glue.wav", "@@b\\Bicep\\Glue.wav");
+    for (user, path, size, queue_length) in [
+        ("alice", fake_path, fake.len(), 0),
+        ("bob", real_path, real.len(), 3),
+    ] {
+        let mut inbound = TcpStream::connect(("127.0.0.1", h.our_port)).await.unwrap();
+        let init = PeerInit::PeerInit {
+            username: user.into(),
+            kind: Some(super::messages::ConnKind::Peer),
+        };
+        inbound.write_all(&init.encode()).await.unwrap();
+        let reply = PeerMessage::SearchReply(SearchReply {
+            username: user.into(),
+            token,
+            files: vec![SharedFile {
+                name: path.into(),
+                size: size as u64,
+                attrs: FileAttrs {
+                    duration_secs: Some(7),
+                    sample_rate_hz: Some(44_100),
+                    bit_depth: Some(16),
+                    ..FileAttrs::default()
+                },
+            }],
+            slot_free: true,
+            avg_speed: 100_000,
+            queue_length,
+        });
+        inbound.write_all(&reply.encode()).await.unwrap();
+    }
+
+    upload_one(&mut h, "alice", fake_path, &fake, 801).await;
+    upload_one(&mut h, "bob", real_path, &real, 802).await;
+    let entry = tokio::time::timeout(Duration::from_secs(20), upgrade)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    let downloads = session.downloads();
+    let rejected = downloads.iter().find(|d| d.username == "alice").unwrap();
+    assert_eq!(rejected.state, DownloadState::Failed);
+    assert!(
+        rejected.error.as_deref().unwrap().contains("fake lossless"),
+        "{:?}",
+        rejected.error
+    );
+    // bob's copy, filed under the SoundCloud track and tagged from it.
+    assert_eq!(entry.key, meta.key());
+    assert_eq!(entry.output, OutputFormat::Lossless);
+    assert!(entry.quality.lossless);
+    assert_eq!(
+        entry.quality.spectrum.as_ref().map(|s| s.verdict),
+        Some(crate::domain::quality::SpectrumVerdict::FullBand)
+    );
+    assert_eq!(entry.source_url, meta.source_url);
+    assert!(
+        entry
+            .obtained_from
+            .as_deref()
+            .unwrap()
+            .starts_with("slsk://bob/")
+    );
+    assert_eq!(
+        entry.path,
+        std::path::PathBuf::from("Bicep/Singles/Glue.wav")
+    );
+    let tags =
+        crate::metadata::tagging::read_existing_tags(&h.library.root().join(&entry.path)).unwrap();
+    assert_eq!(tags.genres, ["Electronic"]);
+
+    h.soulseek.shutdown().await;
+}
+
+#[tokio::test]
 async fn shares_library_for_browsing_and_uploads() {
     let mut h = harness().await;
     // Put a track into the user's library.
@@ -581,6 +970,7 @@ async fn rejected_sign_in_is_reported_and_nothing_keeps_running() {
             allow_loopback: true,
         },
         library,
+        Arc::new(crate::tools::ffmpeg::Ffmpeg::new("ffmpeg")),
     )
     .await
     .unwrap();

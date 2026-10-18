@@ -13,6 +13,7 @@ mod rooms;
 mod search;
 mod settings;
 mod soulseek;
+mod spectrum;
 mod storage;
 mod tools;
 mod web;
@@ -48,8 +49,9 @@ async fn main() -> ExitCode {
         Some("passwd") => reset_password(&args[1..]),
         Some("unlock") => unlock(&args[1..]),
         Some("reset-2fa") => reset_two_factor(&args[1..]),
+        Some("spectrum") => check_spectrum(&args[1..]).await,
         Some(other) => Err(format!(
-            "unknown command '{other}'; usage: inkult [passwd <handle> | unlock <handle> | reset-2fa <handle>]"
+            "unknown command '{other}'; usage: inkult [passwd <handle> | unlock <handle> | reset-2fa <handle> | spectrum <file>…]"
         )
         .into()),
         None => run().await,
@@ -88,6 +90,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         PipelineContext {
             library: Arc::clone(&library),
             ffmpeg: Arc::clone(&ffmpeg),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| format!("cannot initialise the HTTP client for artwork: {e}"))?,
             staging_dir: config.staging_dir.clone(),
             retry,
             max_track_length: settings.track_limit(),
@@ -113,6 +120,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 allow_loopback: false,
             },
             Arc::clone(&library),
+            Arc::clone(&ffmpeg),
         )
         .await?,
     );
@@ -181,6 +189,54 @@ async fn open_settings(config: &Config) -> Result<settings::Settings, Box<dyn st
         tracing::warn!(two_factor = ?current.two_factor, "{var} is no longer read; who must use two-factor login is set in the ADMIN view");
     }
     Ok(settings)
+}
+
+/// `inkult spectrum <file>…`: run the fake-lossless check on local files
+/// and print each verdict. Needs only ffmpeg (`INKULT_FFMPEG`).
+async fn check_spectrum(files: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if files.is_empty() {
+        return Err("usage: inkult spectrum <file>…".into());
+    }
+    let ffmpeg = Ffmpeg::new(std::env::var("INKULT_FFMPEG").unwrap_or_else(|_| "ffmpeg".into()));
+    for file in files {
+        let path = std::path::PathBuf::from(file);
+        let probed = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || {
+                let codec = metadata::tagging::detect_codec(&path)?;
+                let quality = metadata::tagging::probe_quality(&path, codec)?;
+                let secs = metadata::tagging::probe_duration(&path).map(|d| d.as_secs_f64());
+                Ok::<_, metadata::tagging::TagError>((quality, secs))
+            }
+        })
+        .await?;
+        let (quality, secs) = match probed {
+            Ok(probed) => probed,
+            Err(e) => {
+                println!("{file}: {e}");
+                continue;
+            }
+        };
+        let Some(rate) = quality.sample_rate_hz else {
+            println!("{file}: sample rate unknown");
+            continue;
+        };
+        match spectrum::check_file(&ffmpeg, &path, rate, secs).await {
+            Ok(check) => println!(
+                "{file}: {} [{}] {:?}: {}",
+                quality.summary,
+                if quality.codec.is_lossless() {
+                    "lossless codec"
+                } else {
+                    "lossy codec"
+                },
+                check.verdict,
+                check.summary
+            ),
+            Err(e) => println!("{file}: {e}"),
+        }
+    }
+    Ok(())
 }
 
 /// `inkult passwd <handle>`: set an account's password, reading it from

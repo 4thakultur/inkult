@@ -13,6 +13,10 @@
 //!   → place next to the source (no clobber)
 //! ```
 //!
+//! A quality upgrade ([`upgrade`]) hands the search and transfer to the
+//! user's Soulseek session (see `crate::soulseek::upgrade`), which files
+//! the verified copy as the track's Lossless format; the job reports it.
+//!
 //! All work happens in a per-track staging directory; nothing touches the
 //! library until the file is complete, verified and tagged, and a library
 //! file used as a conversion source is only ever read.
@@ -29,11 +33,17 @@ use super::{JobHandle, JobState, RetryPolicy};
 use crate::domain::DownloadProgress;
 use crate::domain::length::TooLong;
 use crate::domain::provider::TrackKey;
-use crate::domain::quality::{AudioFormat, Codec, Conversion, OutputFormat, QualityReport};
+use crate::domain::quality::{
+    AudioFormat, Codec, Conversion, OutputFormat, QualityReport, SpectrumVerdict,
+};
 use crate::library::sanitize::sanitize_component;
 use crate::library::{LibraryEntry, LibraryError};
 use crate::metadata::tagging;
-use crate::providers::{DownloadedMedia, MusicProvider, ProviderError, TrackDetails};
+use crate::providers::{
+    DownloadedMedia, MusicProvider, ProviderError, TrackDetails, is_provider_image_url,
+};
+use crate::soulseek::{Session as SoulseekSession, UpgradeError, UpgradeProgress, UpgradeWanted};
+use crate::spectrum;
 
 /// Artwork larger than this is ignored rather than embedded.
 const MAX_ARTWORK_BYTES: u64 = 16 * 1024 * 1024;
@@ -51,6 +61,26 @@ pub struct ConversionRequest {
     pub key: TrackKey,
     pub source_url: String,
     pub output: OutputFormat,
+}
+
+/// Find a lossless copy of a track on Soulseek.
+pub struct UpgradeRequest {
+    /// The track's source, for duplicate detection and display.
+    pub source_url: String,
+    pub basis: UpgradeBasis,
+    pub session: Arc<SoulseekSession>,
+}
+
+/// What an upgrade starts from.
+pub enum UpgradeBasis {
+    /// A library track: what to look for is already known.
+    Library(Box<UpgradeWanted>),
+    /// A provider's track (a search result), which may not be in the
+    /// library: its metadata is resolved first, nothing is downloaded.
+    Source {
+        provider: Arc<dyn MusicProvider>,
+        url: Url,
+    },
 }
 
 pub enum Outcome {
@@ -88,6 +118,8 @@ pub enum PipelineError {
     },
     #[error("could not add file to library: {0}")]
     Library(#[from] LibraryError),
+    #[error(transparent)]
+    Upgrade(UpgradeError),
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -265,6 +297,22 @@ async fn download_and_import(
     let mut quality = verify_and_tag(&audio_path, details, expected_codec, artwork).await?;
     if conversion.is_some() {
         quality = quality.converted_from(format);
+    } else if quality.codec.is_lossless() {
+        // A lossless original (e.g. a SoundCloud WAV upload) is often an
+        // MP3 the uploader decoded: check before calling it lossless.
+        job.update(|s| s.note = Some("Checking the spectrum".into()));
+        let secs = details.metadata.duration_secs;
+        if let Some(check) =
+            spectrum::check_lossless(&ctx.ffmpeg, &audio_path, &quality, secs).await
+        {
+            if check.verdict == SpectrumVerdict::Lossy {
+                job.update(|s| {
+                    s.warnings
+                        .push(format!("Not really lossless: {}", check.summary))
+                });
+            }
+            quality = quality.with_spectrum(check);
+        }
     }
     tracing::info!(job = job.id(), quality = %quality.summary, "verified and tagged");
     job.update(|s| {
@@ -397,6 +445,263 @@ pub(super) async fn convert_existing(
         tracing::warn!(dir = %work_dir.display(), error = %e, "could not clean staging directory");
     }
     result.map(Outcome::Completed)
+}
+
+/// Upgrade a library track with a lossless copy from Soulseek.
+pub(super) async fn upgrade(
+    job: &JobHandle,
+    request: UpgradeRequest,
+    cancel: &CancellationToken,
+) -> Result<Outcome, PipelineError> {
+    let UpgradeRequest { basis, session, .. } = request;
+    let output = OutputFormat::Lossless;
+    let ctx = job.ctx();
+    job.set_state(JobState::Resolving);
+    let (key, details) = match &basis {
+        UpgradeBasis::Library(wanted) => (wanted.key.clone(), None),
+        UpgradeBasis::Source { provider, url } => {
+            job.update(|s| s.note = Some("Looking the track up at its source".into()));
+            let details = retrying(ctx.retry, job, cancel, || provider.track_details(url)).await?;
+            let meta = &details.metadata;
+            job.update(|s| {
+                s.track_key = Some(meta.key());
+                s.title = meta.title.clone();
+                s.artists = meta.artists.clone();
+                s.thumbnail_url = meta.artwork_url.clone().or(s.thumbnail_url.take());
+                let mut shown = meta.clone();
+                shown.description = None;
+                s.metadata = Some(shown);
+            });
+            ctx.max_track_length.get().check(meta.duration_secs)?;
+            (meta.key(), Some(details))
+        }
+    };
+    let Some(_in_flight) = job.claim_or_wait((key.clone(), output), cancel).await else {
+        return Err(PipelineError::Cancelled);
+    };
+    if let Some(existing) = ctx.library.find(&key, output).await {
+        return Ok(Outcome::Skipped {
+            reason: "A lossless copy is already on disk; added to your library".into(),
+            existing,
+        });
+    }
+    let wanted = match (basis, details) {
+        (UpgradeBasis::Library(wanted), _) => *wanted,
+        // The provider's copy may be in the library already: then the
+        // upgrade is tagged like that copy, as one asked for from the library.
+        (UpgradeBasis::Source { .. }, Some(details)) => {
+            match UpgradeWanted::from_library(&ctx.library, &key).await {
+                Some(wanted) => wanted,
+                None => wanted_from_source(job, details).await,
+            }
+        }
+        (UpgradeBasis::Source { .. }, None) => return Err(PipelineError::SourceMissing),
+    };
+
+    // Which copy is being tried, for the notes of the later stages.
+    let trying = std::sync::Mutex::new(String::new());
+    let report = |progress: UpgradeProgress| {
+        match progress {
+        UpgradeProgress::Searching {
+            query,
+            replies,
+            candidates,
+        } => job.update(|s| {
+            s.state = JobState::Resolving;
+            s.note = Some(match replies {
+                0 => format!("Searching Soulseek for “{query}”"),
+                _ => format!(
+                    "Searching Soulseek for “{query}”: {replies} {} answered, {candidates} lossless {}",
+                    if replies == 1 { "user" } else { "users" },
+                    if candidates == 1 { "match" } else { "matches" },
+                ),
+            });
+        }),
+        UpgradeProgress::Trying {
+            attempt,
+            of,
+            candidate,
+        } => {
+            let (_, file) = crate::soulseek::split_path(&candidate.path);
+            let label = if of > 1 {
+                format!("Copy {attempt} of {of}: {file} from {}", candidate.username)
+            } else {
+                format!("{file} from {}", candidate.username)
+            };
+            *super::lock(&trying) = label.clone();
+            job.update(|s| {
+                s.state = JobState::Downloading;
+                s.source_format_summary = Some(candidate.summary.clone());
+                s.progress = None;
+                s.progress_fraction = None;
+                s.note = Some(label);
+            });
+        }
+        UpgradeProgress::Waiting { note } => {
+            let label = super::lock(&trying).clone();
+            job.update(|s| {
+                s.state = JobState::Downloading;
+                s.note = Some(match note {
+                    Some(note) => format!("{label} · {note}"),
+                    None => label,
+                });
+            });
+        }
+        UpgradeProgress::Transferring {
+            bytes,
+            size,
+            speed_bytes_per_sec,
+        } => {
+            let label = super::lock(&trying).clone();
+            let progress = DownloadProgress {
+                downloaded_bytes: Some(bytes),
+                total_bytes: Some(size),
+                speed_bytes_per_sec,
+            };
+            job.update(|s| {
+                s.state = JobState::Downloading;
+                s.progress_fraction = progress.fraction();
+                s.progress = Some(progress);
+                s.note = Some(label);
+            });
+        }
+        UpgradeProgress::Importing => job.update(|s| {
+            s.state = JobState::Processing;
+            s.progress = None;
+            s.note = Some("Checking that it is lossless and the same length, then tagging".into());
+        }),
+    }
+    };
+    let result = session.upgrade(&wanted, cancel, &report).await;
+    // A cover fetched for this upgrade is used up once it is filed (the
+    // import removes it). After a failure it is not needed either, unless
+    // a transfer will resume with the next sign-in.
+    if let Some(cover) = &wanted.artwork_file
+        && result
+            .as_ref()
+            .is_err_and(|e| !matches!(e, UpgradeError::SessionEnded))
+    {
+        let _ = tokio::fs::remove_file(cover).await;
+    }
+    match result {
+        Ok(entry) => {
+            job.update(|s| {
+                s.quality = Some(entry.quality.clone());
+                s.source_format_summary = Some(entry.quality.summary.clone());
+                s.note = None;
+            });
+            Ok(Outcome::Completed(entry))
+        }
+        Err(UpgradeError::Cancelled) => Err(PipelineError::Cancelled),
+        Err(e) => Err(PipelineError::Upgrade(e)),
+    }
+}
+
+/// What to look for, and how to tag the result, for a track known only
+/// from its provider. The cover is fetched now (no audio is downloaded)
+/// and kept in the staging directory until the upgrade is filed.
+async fn wanted_from_source(job: &JobHandle, details: TrackDetails) -> UpgradeWanted {
+    let artwork_file = fetch_cover(job, &details).await;
+    let mut meta = details.metadata;
+    // Saved with the Soulseek download; descriptions can be long.
+    meta.description = None;
+    UpgradeWanted {
+        key: meta.key(),
+        title: meta.title.clone(),
+        artists: meta.artists.clone(),
+        duration_secs: meta.duration_secs,
+        metadata: Some(meta),
+        artwork_file,
+    }
+}
+
+/// Download the provider's cover for a track, cropped like downloads'
+/// covers. Problems are job warnings; a missing cover never fails the job.
+async fn fetch_cover(job: &JobHandle, details: &TrackDetails) -> Option<PathBuf> {
+    let ctx = job.ctx();
+    let warn = |message: String| {
+        tracing::warn!(job = job.id(), "{message}");
+        job.update(|s| s.warnings.push(message));
+    };
+    let Some(url) = details.metadata.artwork_url.as_deref() else {
+        warn("No artwork was available from the provider".into());
+        return None;
+    };
+    // Provider metadata is untrusted: only fetch from the providers' CDNs.
+    if !is_provider_image_url(url) {
+        warn("Artwork skipped: not a provider image address".into());
+        return None;
+    }
+    let data = match fetch_limited(&ctx.http, url, MAX_ARTWORK_BYTES).await {
+        Ok(data) => data,
+        Err(e) => {
+            warn(format!("Artwork skipped: {e}"));
+            return None;
+        }
+    };
+    let key = details.metadata.key();
+    let dir = ctx.staging_dir.join("upgrade-covers");
+    let base = sanitize_component(&format!("{}-{}", key.provider.slug(), key.id), "cover");
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        warn(format!("Artwork skipped: {e}"));
+        return None;
+    }
+    let raw = dir.join(format!("{base}.download"));
+    if let Err(e) = tokio::fs::write(&raw, &data).await {
+        warn(format!("Artwork skipped: {e}"));
+        return None;
+    }
+    // ffmpeg picks the image format from the extension; JPEG and PNG
+    // covers are kept as they are (the tagger reads the type from the data).
+    let target = dir.join(format!("{base}.jpg"));
+    let result = if details.artwork_needs_square_crop {
+        ctx.ffmpeg
+            .crop_to_square(&raw, &target)
+            .await
+            .map_err(|e| format!("could not crop it: {e}"))
+    } else if tagging::artwork_mime(&data).is_some() {
+        tokio::fs::rename(&raw, &target)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        ctx.ffmpeg
+            .image_to_jpeg(&raw, &target)
+            .await
+            .map_err(|e| format!("could not convert it to JPEG: {e}"))
+    };
+    let _ = tokio::fs::remove_file(&raw).await;
+    match result {
+        Ok(()) => Some(target),
+        Err(e) => {
+            warn(format!("Artwork skipped: {e}"));
+            None
+        }
+    }
+}
+
+/// GET `url`, refusing bodies over `max` bytes.
+async fn fetch_limited(http: &reqwest::Client, url: &str, max: u64) -> Result<Vec<u8>, String> {
+    let mut response = http
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| e.without_url().to_string())?;
+    if response.content_length().is_some_and(|len| len > max) {
+        return Err("too large".into());
+    }
+    let mut data = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| e.without_url().to_string())?
+    {
+        data.extend_from_slice(&chunk);
+        if data.len() as u64 > max {
+            return Err("too large".into());
+        }
+    }
+    Ok(data)
 }
 
 async fn convert_into_library(

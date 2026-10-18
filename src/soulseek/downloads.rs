@@ -36,10 +36,11 @@ use tokio::net::TcpStream;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use super::import::{self, ImportRequest};
+use super::import::{self, ImportRequest, UpgradeImport};
 use super::messages::{PeerMessage, SharedDir};
 use super::session::Session;
 use super::store::SavedDownload;
+use super::upgrade::UpgradeTarget;
 use super::wire::md5_hex;
 use super::{SoulseekError, check_username, cover_rank, is_audio, now_ms, split_path};
 use crate::domain::provider::{ProviderKind, TrackKey};
@@ -134,6 +135,8 @@ pub struct DownloadView {
     pub quality: Option<crate::domain::quality::QualityReport>,
     pub artwork: Option<String>,
     pub inferred: Vec<String>,
+    /// Title of the library track this file is a quality upgrade for.
+    pub upgrade_for: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -141,6 +144,9 @@ pub struct DownloadView {
 struct Download {
     view: DownloadView,
     key: TrackKey,
+    /// Set when the file is a quality upgrade: it is filed under that
+    /// library track instead of becoming a Soulseek track of its own.
+    upgrade: Option<UpgradeTarget>,
     token: Option<u32>,
     next_attempt_ms: u64,
     last_queue_ms: u64,
@@ -201,7 +207,14 @@ pub(super) struct Downloads {
     dirty: Mutex<bool>,
 }
 
-fn new_download(id: u64, peer: String, path: String, size: u64, cover: bool) -> Download {
+fn new_download(
+    id: u64,
+    peer: String,
+    path: String,
+    size: u64,
+    cover: bool,
+    upgrade: Option<UpgradeTarget>,
+) -> Download {
     let now = now_ms();
     Download {
         key: file_key(&peer, &path),
@@ -224,9 +237,11 @@ fn new_download(id: u64, peer: String, path: String, size: u64, cover: bool) -> 
             quality: None,
             artwork: None,
             inferred: Vec::new(),
+            upgrade_for: upgrade.as_ref().map(|u| u.title.clone()),
             created_at_ms: now,
             updated_at_ms: now,
         },
+        upgrade,
         token: None,
         next_attempt_ms: 0,
         last_queue_ms: 0,
@@ -248,6 +263,7 @@ impl Downloads {
                     s.path.clone(),
                     s.size,
                     s.cover,
+                    s.upgrade.clone(),
                 )
             })
             .collect();
@@ -300,6 +316,7 @@ impl Downloads {
                 path: d.view.path.clone(),
                 size: d.view.size,
                 cover: d.view.cover,
+                upgrade: d.upgrade.clone(),
             })
             .collect()
     }
@@ -537,7 +554,7 @@ impl Session {
                 }
                 let id = *next_id;
                 *next_id += 1;
-                let mut download = new_download(id, peer.clone(), path, size, cover);
+                let mut download = new_download(id, peer.clone(), path, size, cover, None);
                 if in_library.contains(&download.key) {
                     download.view.note =
                         Some("Already in the library; added to yours without downloading".into());
@@ -564,6 +581,59 @@ impl Session {
         self.downloads.wake.notify_one();
         tracing::info!(owner = %self.owner, %peer, queued, "Soulseek downloads queued");
         Ok(queued)
+    }
+
+    /// Queue `peer`'s file as a quality upgrade of `target`. Returns the
+    /// download's id, or `None` if the file is already being downloaded.
+    pub(super) async fn queue_upgrade(
+        &self,
+        peer: &str,
+        path: &str,
+        size: u64,
+        target: UpgradeTarget,
+    ) -> Result<Option<u64>, SoulseekError> {
+        let peer = check_username(peer)?;
+        check_path(path)?;
+        if size > MAX_FILE_BYTES || !is_audio(path) {
+            return Err(SoulseekError::InvalidInput(
+                "not an audio file Inkult can add to the library".into(),
+            ));
+        }
+        let id = {
+            let mut items = lock(&self.downloads.items);
+            let unfinished = items.iter().filter(|d| !d.view.state.is_terminal()).count();
+            if unfinished >= MAX_QUEUED {
+                return Err(SoulseekError::Limit(format!(
+                    "the download queue holds at most {MAX_QUEUED} unfinished files"
+                )));
+            }
+            if items.iter().any(|d| {
+                !d.view.state.is_terminal() && d.view.username == peer && d.view.path == path
+            }) {
+                return Ok(None);
+            }
+            let mut next_id = lock(&self.downloads.next_id);
+            let id = *next_id;
+            *next_id += 1;
+            items.push(new_download(
+                id,
+                peer.clone(),
+                path.to_owned(),
+                size,
+                false,
+                Some(target),
+            ));
+            prune_finished(&mut items);
+            id
+        };
+        self.downloads.mark_dirty();
+        self.downloads.wake.notify_one();
+        tracing::info!(owner = %self.owner, %peer, "Soulseek quality upgrade queued");
+        Ok(Some(id))
+    }
+
+    pub(super) fn download_view(&self, id: u64) -> Option<DownloadView> {
+        self.downloads.with(id, |d| d.view.clone())
     }
 
     pub fn downloads(&self) -> Vec<DownloadView> {
@@ -932,12 +1002,13 @@ impl Session {
     /// Move a completed file where it belongs: covers aside for their
     /// folder, audio through import into the library.
     async fn finish_download(self: Arc<Self>, id: u64) {
-        let Some((peer, path, key, cover, cancel)) = self.downloads.with(id, |d| {
+        let Some((peer, path, key, cover, upgrade, cancel)) = self.downloads.with(id, |d| {
             (
                 d.view.username.clone(),
                 d.view.path.clone(),
                 d.key.clone(),
                 d.view.cover,
+                d.upgrade.clone(),
                 d.cancel.clone(),
             )
         }) else {
@@ -964,6 +1035,22 @@ impl Session {
             return;
         }
 
+        if let Some(target) = upgrade {
+            let request = UpgradeImport {
+                peer,
+                path,
+                staged: partial.clone(),
+                target,
+                max_track_length: self.ctx.config.max_track_length.get(),
+                owners: BTreeSet::from([self.owner]),
+            };
+            let result = import::import_upgrade(&self.ctx.library, &self.ctx.ffmpeg, request).await;
+            self.record_import(id, result);
+            let _ = tokio::fs::remove_file(&partial).await;
+            self.downloads.mark_dirty();
+            return;
+        }
+
         self.wait_for_cover(&peer, &path, &cancel).await;
         if cancel.is_cancelled() {
             return;
@@ -982,7 +1069,15 @@ impl Session {
             max_track_length: self.ctx.config.max_track_length.get(),
             owners: BTreeSet::from([self.owner]),
         };
-        let result = import::import(&self.ctx.library, request).await;
+        let result = import::import(&self.ctx.library, &self.ctx.ffmpeg, request).await;
+        self.record_import(id, result);
+        // The staged file is gone after a successful import; after a failed
+        // one it is unusable, so never resume from it.
+        let _ = tokio::fs::remove_file(&partial).await;
+        self.downloads.mark_dirty();
+    }
+
+    fn record_import(&self, id: u64, result: Result<import::ImportOutcome, import::ImportError>) {
         self.downloads.with(id, |d| match result {
             Ok(outcome) => {
                 d.view.track_key = Some(outcome.entry.key.clone());
@@ -999,10 +1094,6 @@ impl Session {
             }
             Err(e) => d.fail(e.to_string(), false),
         });
-        // The staged file is gone after a successful import; after a failed
-        // one it is unusable, so never resume from it.
-        let _ = tokio::fs::remove_file(&partial).await;
-        self.downloads.mark_dirty();
     }
 
     /// If the cover of this track's folder is being transferred right now,
@@ -1119,6 +1210,7 @@ mod tests {
             path: "a\\b.flac".into(),
             size: 10,
             cover: false,
+            upgrade: None,
         }]);
         let refuse = downloads.offered("alice", 1, "a\\other.flac", Some(10));
         assert!(matches!(
@@ -1150,12 +1242,14 @@ mod tests {
                 path: "x\\1.mp3".into(),
                 size: 1,
                 cover: false,
+                upgrade: None,
             },
             SavedDownload {
                 peer: "p".into(),
                 path: "x\\2.mp3".into(),
                 size: 1,
                 cover: false,
+                upgrade: None,
             },
         ];
         let downloads = Downloads::new(&saved);

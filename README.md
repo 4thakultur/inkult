@@ -18,7 +18,8 @@ a clean library. One server, several users, a single shared music folder.
 - **A library you'd organize yourself.** `Artist/Album/03 - Title.ext`, no
   duplicates, and existing files are never overwritten.
 - **Soulseek built in.** A native client: search, browse, queue whole
-  folders, share your library. No other client needed.
+  folders, share your library. No other client needed. **Quality upgrade**
+  finds a lossless copy of a track you got from search and adds it next to it.
 - **Made to be exposed to the internet**, behind your reverse proxy:
   mandatory two-factor login, account locking, per-client limits, and
   admin-only server settings.
@@ -235,6 +236,63 @@ source file, and the result records its history, e.g. "converted from MP3 ·
 source; the source is never modified. Conversions run in the download queue
 and can be cancelled there.
 
+### Quality upgrade
+
+For tracks downloaded from search (YouTube, SoundCloud), **[CONV] → Quality
+upgrade** looks for a lossless copy on Soulseek and adds it to the library as
+another format of the same track (**Lossless**, listed first in the row's
+format menu). It needs you to be signed in to Soulseek, and uses your account.
+
+**[GET] → Quality upgrade** on a search result does the same without
+downloading the YouTube/SoundCloud stream first: Inkult looks the track up at
+its source (title, artists, length, artwork, release details; no audio), then
+searches Soulseek. The file is tagged from the source's metadata and cover
+(the shared file's own tags fill whatever the source lacks) and filed under
+that track, so a later download of the stream joins it as another format. If
+you already have the track, it is tagged like your copy instead.
+
+1. Inkult searches Soulseek for the artist and title (without "Official
+   Video" and featured artists) and collects replies for 10–30 seconds.
+2. Only FLAC, WAV and AIFF files count. A file must contain every word of the
+   title and of one artist in its path, must not name another version
+   ("Remix", "Live", "Extended Mix"…; "Original Mix" is fine), and, when the
+   user's client reports a length, must be within a few seconds of yours.
+3. The best match is downloaded: confirmed length first, then a free upload
+   slot, then bit depth and sample rate, then FLAC over AIFF over WAV, then the
+   shorter queue and faster user. If it fails, is refused, or has not started
+   after 10 minutes, the next one is tried (up to 5).
+4. The received file must really be lossless (codec *and* [spectrum
+   check](#spectrum-check)) and as long as your copy, or it is rejected and
+   the next match is tried. It is tagged like your copy (your
+   edits, artwork and Inkult's identity carry over); its own tags only fill
+   gaps such as album, track number or ISRC.
+
+The upgrade runs in **Downloads**, and its transfer also shows in the
+Soulseek tab. The file is written next to your copy, which is never touched,
+and records where it came from ("via Soulseek"). Conversions of the track then
+start from the lossless copy.
+
+### Spectrum check
+
+A FLAC made from an MP3 is the size of a FLAC and the quality of the MP3.
+Lossy encoders remove the top of the spectrum with a steep cut (MP3 128
+kbps at about 16–17 kHz, 192 at about 19 kHz, Opus and AAC near 20 kHz), and
+decoding keeps that hole. Inkult decodes every lossless file it receives
+from Soulseek or downloads as a lossless original (e.g. a SoundCloud WAV),
+averages its spectrum over the whole track and looks for that cliff:
+
+| Verdict | Shown as | Meaning |
+|---|---|---|
+| Full band | `spectrum ok` | Content up to the top of the range; no sign of lossy encoding. |
+| Lossy | `fake lossless` | A cliff below 20.3 kHz: made from a lossy file. Not marked lossless; ranked as the lossy file it was (so it is not preferred as a conversion source). Quality upgrades reject it and try the next copy. |
+| Upsampled | `upsampled` | A 88.2 kHz+ file with nothing above CD range: not real high resolution. Still lossless. |
+| No verdict | `spectrum ?` | Too quiet or too dull at the top to tell (old recordings, some ambient). |
+
+It is a heuristic, like checking a spectrogram by eye: MP3 at 320 kbps and
+encoders that keep the full band (e.g. ffmpeg's own AAC at 256 kbps) are not
+caught, and a track low-passed on purpose for its whole length would look
+lossy. To check files by hand: `inkult spectrum <file>…`.
+
 ## Soulseek
 
 Soulseek is a peer-to-peer network where people share their own music
@@ -292,9 +350,9 @@ download:
    layout and naming rules, and added to your library. The same file from the
    same user is never downloaded twice.
 
-Lossless files are reported as lossless, with a note: Soulseek uploads are
-sometimes transcoded from lossy sources, which no tag or container reveals.
-Check the spectrum when it matters.
+Every received FLAC, WAV or AIFF gets a [spectrum check](#spectrum-check). A
+file found to be made from lossy audio is kept (you chose it) but is not
+called lossless, and says why.
 
 **Sharing** (off by default, **SETUP**). When on, the tracks in *your* Inkult
 library are shared read-only under a virtual `inkult\Artist\Album\…` folder:
@@ -387,6 +445,8 @@ logs you in once if the phone is lost. The server's clock must be right
 - **Lost phone and recovery codes?** A captain uses **[RESET 2FA]** in
   **[7] ADMIN**. If it's the only captain, stop Inkult and run
   `inkult reset-2fa <handle>`.
+- **Is this file really lossless?** `inkult spectrum <file>…` prints the
+  [spectrum check](#spectrum-check) verdict for each file (needs only ffmpeg).
 - **Locked out?** Stop Inkult and run
   `echo 'new password' | inkult passwd <handle>`. If the account was only
   locked by failed logins, `inkult unlock <handle>` lifts the lock and keeps

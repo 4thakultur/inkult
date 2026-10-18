@@ -225,6 +225,85 @@ pub fn copy_tags(
     Ok(has_artwork)
 }
 
+/// Fields a received copy may contribute when the library's copy of the
+/// track has none: release details that video and streaming sources often
+/// lack. Title and artists are deliberately absent: the library's own copy
+/// names the track, so every format of it agrees.
+const ADOPTABLE_FIELDS: &[(ItemKey, &str)] = &[
+    (ItemKey::AlbumTitle, "album"),
+    (ItemKey::AlbumArtist, "album_artist"),
+    (ItemKey::TrackNumber, "track_number"),
+    (ItemKey::TrackTotal, "track_total"),
+    (ItemKey::DiscNumber, "disc_number"),
+    (ItemKey::DiscTotal, "disc_total"),
+    (ItemKey::RecordingDate, "release_date"),
+    (ItemKey::Year, "release_date"),
+    (ItemKey::Genre, "genres"),
+    (ItemKey::Label, "label"),
+    (ItemKey::Publisher, "label"),
+    (ItemKey::CopyrightMessage, "copyright"),
+    (ItemKey::Isrc, "isrc"),
+];
+
+/// What [`adopt_tags`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct AdoptedTags {
+    pub artwork: bool,
+    /// Fields taken from the received file's own tags, by name.
+    pub filled: Vec<&'static str>,
+}
+
+/// Tag `target`, a copy of a library track obtained elsewhere (such as a
+/// lossless upgrade from another user), as that track. The library file's
+/// tags and artwork win, like [`copy_tags`] does for conversions, so user
+/// edits carry over and all formats of the track agree. `target`'s own
+/// tags only fill fields the library copy lacks (see `ADOPTABLE_FIELDS`)
+/// and supply artwork when the library copy has none.
+pub fn adopt_tags(
+    library_file: &Path,
+    target: &Path,
+    track_key: &str,
+    source_url: &str,
+) -> Result<AdoptedTags, TagError> {
+    let library = lofty::read_from_path(library_file).map_err(TagError::InvalidMedia)?;
+    let received = lofty::read_from_path(target).map_err(TagError::InvalidMedia)?;
+    let tag_type = received.primary_tag_type();
+    let mut tag = library
+        .primary_tag()
+        .or_else(|| library.first_tag())
+        .cloned()
+        .unwrap_or_else(|| Tag::new(tag_type));
+    tag.re_map(tag_type);
+    let mut filled = Vec::new();
+    if let Some(own) = received.primary_tag().or_else(|| received.first_tag()) {
+        let mut own = own.clone();
+        own.re_map(tag_type);
+        for &(key, name) in ADOPTABLE_FIELDS {
+            if tag.get(key).is_some() {
+                continue;
+            }
+            let items: Vec<TagItem> = own.get_items(key).cloned().collect();
+            if items.is_empty() {
+                continue;
+            }
+            for item in items {
+                tag.push(item);
+            }
+            if !filled.contains(&name) {
+                filled.push(name);
+            }
+        }
+        if tag.pictures().is_empty() {
+            for picture in own.pictures() {
+                tag.push_picture(picture.clone());
+            }
+        }
+    }
+    let artwork = !tag.pictures().is_empty();
+    save_with_provenance(tag, tag_type, target, track_key, source_url)?;
+    Ok(AdoptedTags { artwork, filled })
+}
+
 fn apply_metadata(tag: &mut Tag, meta: &TrackMetadata, artwork: Option<(Vec<u8>, MimeType)>) {
     tag.set_title(meta.title.clone());
     if !meta.artists.is_empty() {
@@ -451,5 +530,73 @@ mod tests {
         assert_eq!(tag.pictures()[0].data(), jpeg.as_slice());
         let id3 = Id3v2Tag::from(tag.clone());
         assert_eq!(id3.get_user_text(TRACK_KEY_FIELD), Some("soundcloud:42"));
+    }
+
+    #[test]
+    fn adopted_copies_keep_the_library_tags_and_fill_gaps() {
+        use crate::domain::provider::ProviderKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("library.wav");
+        std::fs::write(&library, silent_wav()).unwrap();
+        let meta = TrackMetadata {
+            provider: ProviderKind::YouTube,
+            provider_track_id: "abc".into(),
+            source_url: "https://music.youtube.com/watch?v=abc".into(),
+            title: "Glue".into(),
+            artists: vec!["Bicep".into()],
+            album: None,
+            album_artist: None,
+            track_number: None,
+            disc_number: None,
+            release_date: None,
+            genres: vec![],
+            description: None,
+            copyright: None,
+            label: None,
+            isrc: None,
+            artwork_url: None,
+            duration_secs: None,
+            inferred: vec![],
+        };
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+        write_tags(&library, &meta, Some((jpeg.clone(), MimeType::Jpeg))).unwrap();
+
+        // The peer's file names the track differently and knows the album.
+        let received = dir.path().join("received.wav");
+        std::fs::write(&received, silent_wav()).unwrap();
+        let mut peer = meta.clone();
+        peer.title = "glue (original mix)".into();
+        peer.album = Some("Bicep".into());
+        peer.track_number = Some(3);
+        peer.isrc = Some("GBCFB1700123".into());
+        write_tags(
+            &received,
+            &peer,
+            Some((vec![0x89, b'P', b'N', b'G'], MimeType::Png)),
+        )
+        .unwrap();
+
+        let adopted = adopt_tags(
+            &library,
+            &received,
+            "youtube:abc",
+            "https://music.youtube.com/watch?v=abc",
+        )
+        .unwrap();
+        assert!(adopted.artwork);
+        assert!(adopted.filled.contains(&"album"));
+        assert!(adopted.filled.contains(&"track_number"));
+        assert!(adopted.filled.contains(&"isrc"));
+
+        let file = lofty::read_from_path(&received).unwrap();
+        let tag = file.primary_tag().unwrap();
+        assert_eq!(tag.title().as_deref(), Some("Glue"));
+        assert_eq!(tag.album().as_deref(), Some("Bicep"));
+        assert_eq!(tag.track(), Some(3));
+        assert_eq!(tag.pictures().len(), 1);
+        assert_eq!(tag.pictures()[0].data(), jpeg.as_slice());
+        let id3 = Id3v2Tag::from(tag.clone());
+        assert_eq!(id3.get_user_text(TRACK_KEY_FIELD), Some("youtube:abc"));
     }
 }

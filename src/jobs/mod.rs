@@ -8,9 +8,14 @@
 //! any non-terminal state → Failed | Cancelled
 //! ```
 //!
-//! A job either downloads a track or converts a library file to another
-//! format; both share the lifecycle (a conversion skips the resolving and
-//! downloading states), the concurrency limit and duplicate handling.
+//! A job either downloads a track, converts a library file to another
+//! format, or upgrades a library track with a lossless copy from Soulseek.
+//! All share the lifecycle (a conversion skips the resolving and
+//! downloading states; an upgrade "resolves" by searching Soulseek) and
+//! duplicate handling. Downloads and conversions share the concurrency
+//! limit; upgrades do not take a slot, since they mostly wait on other
+//! Soulseek users (sometimes for hours) and Soulseek limits its own
+//! transfers.
 //!
 //! A job belongs to the users who requested it. Requesting a track that is
 //! already queued adds the user to that job instead of downloading twice,
@@ -44,6 +49,7 @@ use crate::domain::provider::{ProviderKind, TrackKey};
 use crate::domain::quality::{AudioFormat, OutputFormat, QualityReport};
 use crate::library::{Library, LibraryEntry};
 use crate::providers::{MusicProvider, TrackSummary};
+use crate::soulseek::{Session as SoulseekSession, UpgradeWanted};
 use crate::tools::ffmpeg::Ffmpeg;
 
 pub type JobId = u64;
@@ -88,6 +94,8 @@ pub enum JobKind {
     Download,
     /// Re-encode a file already in the library; nothing is downloaded.
     Convert,
+    /// Find a lossless copy of a library track on Soulseek.
+    Upgrade,
 }
 
 /// Everything the UI shows about a job.
@@ -146,6 +154,9 @@ impl RetryPolicy {
 pub struct PipelineContext {
     pub library: Arc<Library>,
     pub ffmpeg: Arc<Ffmpeg>,
+    /// For fetching provider artwork outside a download (quality upgrades
+    /// from search). Only used with provider image URLs.
+    pub http: reqwest::Client,
     pub staging_dir: PathBuf,
     pub retry: RetryPolicy,
     pub max_track_length: TrackLengthLimit,
@@ -259,6 +270,54 @@ impl JobManager {
         self.submit(work, display, requester)
     }
 
+    /// Queue a quality upgrade of a library track for `requester`, run
+    /// through their Soulseek `session`. Joins an unfinished upgrade of the
+    /// same track (by anyone; every requester gets the result).
+    pub fn enqueue_upgrade(
+        &self,
+        track: &LibraryEntry,
+        wanted: UpgradeWanted,
+        session: Arc<SoulseekSession>,
+        requester: UserId,
+    ) -> Result<JobId, EnqueueError> {
+        let display = Display {
+            title: track.title.clone(),
+            artists: track.artists.clone(),
+            thumbnail_url: track.artwork_url.clone(),
+        };
+        let work = Work::Upgrade(pipeline::UpgradeRequest {
+            source_url: track.source_url.clone(),
+            basis: pipeline::UpgradeBasis::Library(Box::new(wanted)),
+            session,
+        });
+        self.submit(work, display, requester)
+    }
+
+    /// Queue a quality upgrade of a provider's track (from a search
+    /// result) that may not be in the library. `display` is the result's
+    /// title, artists and thumbnail, shown until the metadata is resolved.
+    pub fn enqueue_upgrade_from_source(
+        &self,
+        provider: Arc<dyn MusicProvider>,
+        url: Url,
+        display: (String, Vec<String>, Option<String>),
+        session: Arc<SoulseekSession>,
+        requester: UserId,
+    ) -> Result<JobId, EnqueueError> {
+        let (title, artists, thumbnail_url) = display;
+        let display = Display {
+            title,
+            artists,
+            thumbnail_url,
+        };
+        let work = Work::Upgrade(pipeline::UpgradeRequest {
+            source_url: url.to_string(),
+            basis: pipeline::UpgradeBasis::Source { provider, url },
+            session,
+        });
+        self.submit(work, display, requester)
+    }
+
     fn submit(
         &self,
         work: Work,
@@ -280,6 +339,21 @@ impl JobManager {
                 request.output,
                 Some(request.key.clone()),
             ),
+            Work::Upgrade(request) => {
+                let (provider, key) = match &request.basis {
+                    pipeline::UpgradeBasis::Library(wanted) => {
+                        (wanted.key.provider, Some(wanted.key.clone()))
+                    }
+                    pipeline::UpgradeBasis::Source { provider, .. } => (provider.kind(), None),
+                };
+                (
+                    JobKind::Upgrade,
+                    request.source_url.clone(),
+                    provider,
+                    OutputFormat::Lossless,
+                    key,
+                )
+            }
         };
         let cancel = CancellationToken::new();
         let id = {
@@ -347,20 +421,26 @@ impl JobManager {
         };
         let slots = Arc::clone(&self.inner.download_slots);
         tokio::spawn(async move {
-            // Conversions share the download slots: they are CPU and disk
-            // heavy, and the same limit keeps a small server responsive.
-            let permit = tokio::select! {
-                permit = slots.acquire_owned() => permit.ok(),
-                _ = cancel.cancelled() => None,
-            };
-            let result = match (permit, work) {
-                (Some(_permit), Work::Download { request, provider }) => {
-                    pipeline::run(&handle, provider, request, &cancel).await
+            let result = match work {
+                Work::Upgrade(request) => pipeline::upgrade(&handle, request, &cancel).await,
+                work => {
+                    // Conversions share the download slots: they are CPU and
+                    // disk heavy, and the same limit keeps a small server
+                    // responsive.
+                    let permit = tokio::select! {
+                        permit = slots.acquire_owned() => permit.ok(),
+                        _ = cancel.cancelled() => None,
+                    };
+                    match (permit, work) {
+                        (Some(_permit), Work::Download { request, provider }) => {
+                            pipeline::run(&handle, provider, request, &cancel).await
+                        }
+                        (Some(_permit), Work::Convert(request)) => {
+                            pipeline::convert_existing(&handle, request, &cancel).await
+                        }
+                        _ => Err(pipeline::PipelineError::Cancelled),
+                    }
                 }
-                (Some(_permit), Work::Convert(request)) => {
-                    pipeline::convert_existing(&handle, request, &cancel).await
-                }
-                (None, _) => Err(pipeline::PipelineError::Cancelled),
             };
             if let Some((key, output)) = handle.finish(result, &cancel) {
                 // Requesters may have joined after the file was imported;
@@ -478,6 +558,7 @@ enum Work {
         provider: Arc<dyn MusicProvider>,
     },
     Convert(pipeline::ConversionRequest),
+    Upgrade(pipeline::UpgradeRequest),
 }
 
 fn prune_finished(jobs: &mut BTreeMap<JobId, JobEntry>) {
