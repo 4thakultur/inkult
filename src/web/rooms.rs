@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::app::{App, AppError, ShareRequest};
+use crate::app::{App, AppError, BulkRequest, ShareRequest};
 use crate::auth::User;
 use crate::rooms::{RoomError, RoomId};
 
@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/rooms/{id}/leave", post(leave))
         .route("/api/rooms/{id}/messages", post(send))
         .route("/api/rooms/{id}/tracks", post(share))
+        .route("/api/rooms/{id}/tracks/bulk", post(share_many))
         .route("/api/rooms/{id}/tracks/{seq}/claim", post(claim))
 }
 
@@ -182,6 +183,17 @@ async fn share(
 ) -> Result<impl IntoResponse, AppError> {
     let message = app.share_track(&user, RoomId(id), body).await?;
     Ok((StatusCode::CREATED, Json(message)))
+}
+
+/// Share several of the user's library tracks in the room at once.
+async fn share_many(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Path(id): Path<u64>,
+    Json(body): Json<BulkRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let messages = app.share_tracks(&user, RoomId(id), body).await?;
+    Ok((StatusCode::CREATED, Json(messages)))
 }
 
 /// Add a track shared in the room to the user's library.

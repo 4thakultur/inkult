@@ -81,6 +81,14 @@ const state = {
   libraryFormat: new Map(),
   /** Library order: a LIBRARY_SORTS key and whether it is reversed. */
   librarySort: { by: "added", reversed: false },
+  /** Track identities ticked for bulk actions; each acts on its picked format. */
+  librarySelected: new Set(),
+  /** Last ticked track, where a shift-click range starts. */
+  libraryAnchor: null,
+  /** Identities of the tracks listed right now, in list order. */
+  libraryShown: [],
+  /** Whether a bulk action is running (its buttons are then disabled). */
+  libraryBusy: false,
   jobEls: new Map(),
   /** Job id → state at the last poll, for announcing transitions. */
   jobStates: null,
@@ -154,7 +162,8 @@ function formatTime(secs) {
 function formatBytes(n) {
   if (typeof n !== "number") return "?";
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
 /** "44.1 kHz" and "320 kbps" never break between number and unit. */
@@ -1493,6 +1502,8 @@ async function loadLibrary() {
   try {
     const scope = isCaptain() ? state.libraryScope : "mine";
     state.library = await api(`/api/library?scope=${scope}`);
+    const present = new Set(state.library.map((entry) => trackIdentity(entry.key)));
+    for (const id of state.librarySelected) if (!present.has(id)) state.librarySelected.delete(id);
     renderLibrary();
   } catch (err) {
     container.replaceChildren(h("p", { class: "error-line" }, err.message));
@@ -1503,6 +1514,7 @@ function renderLibrary() {
   const container = $("#library");
   const filter = $("#library-filter").value.trim().toLowerCase();
   if (state.library.length === 0) {
+    state.libraryShown = [];
     container.replaceChildren(h("div", { class: "empty" }, h("p", { class: "empty-title" }, ">> 0 FILES."),
       h("p", {}, state.libraryScope === "all" && isCaptain()
         ? "THE HOLD IS EMPTY."
@@ -1516,15 +1528,18 @@ function renderLibrary() {
   const files = (list) => list.reduce((n, versions) => n + versions.length, 0);
   const count = (list) => `${list.length} TRACK${list.length === 1 ? "" : "S"}` +
     (files(list) === list.length ? "" : ` · ${files(list)} FILES`);
+  state.libraryShown = shown.map((versions) => trackIdentity(versions[0].key));
   // One grid for the heading and every row (rows are subgrids), so the
   // columns line up whatever each row's buttons and text need.
   container.replaceChildren(
     h("div", { class: "lib-list" },
-      h("div", { class: "lib-row list-head", "aria-hidden": "true" }, h("span"), h("span", {}, "NAME"),
+      h("div", { class: "lib-row list-head", "aria-hidden": "true" }, h("span"), h("span"), h("span", {}, "NAME"),
         h("span", { class: "album" }, "ALBUM"), h("span", { class: "added-cell" }, "ADDED"),
         h("span", { class: "quality-cell" }, "QUALITY"), h("span")),
       ...shown.map(libraryRow)),
+    h("div", { class: "lib-bulk", id: "lib-bulk", role: "toolbar", "aria-label": "Bulk actions" }),
     listFoot(filter ? `${count(shown)} OF ${count(tracks)} MATCH` : count(tracks)));
+  renderBulkBar();
 }
 
 function trackIdentity(key) {
@@ -1640,10 +1655,16 @@ function formatAdded(secs) {
   return formatDate(secs);
 }
 
+/** The file a library track's row acts on: the format picked in its menu. */
+function pickedVersion(versions) {
+  const id = trackIdentity(versions[0].key);
+  return versions.find((v) => v.output === state.libraryFormat.get(id)) || versions[0];
+}
+
 /** One library track; with several formats, a menu picks the file the row acts on. */
 function libraryRow(versions) {
   const id = trackIdentity(versions[0].key);
-  const entry = versions.find((v) => v.output === state.libraryFormat.get(id)) || versions[0];
+  const entry = pickedVersion(versions);
   const formatLabel = (output) => OUTPUT_SHORT[output] || output;
   const picker = versions.length > 1
     ? h("select", {
@@ -1660,7 +1681,13 @@ function libraryRow(versions) {
     }, versions.map((v) => h("option", { value: v.output, selected: v === entry ? true : null },
       formatLabel(v.output))))
     : null;
-  const row = h("div", { class: "lib-row" },
+  const selected = state.librarySelected.has(id);
+  const row = h("div", { class: selected ? "lib-row selected" : "lib-row", "data-track": id },
+    h("button", {
+      type: "button", class: "pick", role: "checkbox", "aria-checked": String(selected),
+      "aria-label": `Select ${entry.title}`, title: "Select for bulk actions (shift-click: a range)",
+      onclick: (event) => toggleSelected(id, event.shiftKey),
+    }),
     playableArt(itemForEntry(entry), entry.artwork_url),
     h("div", { class: "title-cell" },
       h("div", { class: "title", title: entry.title }, entry.title),
@@ -1684,6 +1711,261 @@ function libraryRow(versions) {
       saveLink(libraryFileUrl(entry.key.provider, entry.key.id, entry.output), String(entry.path), entry.title),
       removeButton(entry, versions.length)));
   return row;
+}
+
+// ---------- library bulk actions ----------
+// Ticked tracks are acted on together, each in the format its row shows.
+// Every action goes through the same server checks as the row buttons.
+
+/** Tick or untick a track; with shift, every listed track up to the last one ticked. */
+function toggleSelected(id, range) {
+  const selected = state.librarySelected;
+  const on = !selected.has(id);
+  const from = state.libraryShown.indexOf(state.libraryAnchor);
+  const to = state.libraryShown.indexOf(id);
+  const ids = range && from >= 0 && to >= 0
+    ? state.libraryShown.slice(Math.min(from, to), Math.max(from, to) + 1)
+    : [id];
+  for (const each of ids) {
+    if (on) selected.add(each); else selected.delete(each);
+  }
+  state.libraryAnchor = id;
+  syncSelectedRows();
+}
+
+function setSelection(ids) {
+  state.librarySelected = new Set(ids);
+  state.libraryAnchor = null;
+  syncSelectedRows();
+}
+
+/** Update the rows' ticks and the bulk bar without rebuilding the list. */
+function syncSelectedRows() {
+  for (const row of document.querySelectorAll("#library .lib-row[data-track]")) {
+    const on = state.librarySelected.has(row.dataset.track);
+    row.classList.toggle("selected", on);
+    row.querySelector(".pick").setAttribute("aria-checked", String(on));
+  }
+  renderBulkBar();
+}
+
+/** The ticked tracks, each as its picked file. */
+function selectedEntries() {
+  return groupLibrary(state.library)
+    .filter((versions) => state.librarySelected.has(trackIdentity(versions[0].key)))
+    .map(pickedVersion);
+}
+
+function fileRef(entry) {
+  return { provider: entry.key.provider, id: entry.key.id, output: entry.output };
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "S"}`;
+}
+
+function renderBulkBar() {
+  const bar = $("#lib-bulk");
+  if (!bar) return;
+  const shown = state.libraryShown;
+  const picked = state.librarySelected.size;
+  const shownPicked = shown.filter((id) => state.librarySelected.has(id)).length;
+  const all = shown.length > 0 && shownPicked === shown.length;
+  const hidden = picked - shownPicked;
+  const busy = state.libraryBusy;
+  // Phones fit the four actions on one line only without the inner spaces.
+  const action = (label, title, run, cls = "btn") => h("button", {
+    type: "button", class: cls, title, disabled: !picked || busy ? true : null,
+    onclick: (event) => run(event.currentTarget),
+  }, PHONE.matches ? `[${label}]` : `[ ${label} ]`);
+  bar.classList.toggle("active", picked > 0);
+  bar.replaceChildren(
+    h("button", {
+      type: "button", class: "pick", role: "checkbox",
+      "aria-checked": all ? "true" : shownPicked ? "mixed" : "false",
+      "aria-label": "Select every listed track",
+      disabled: shown.length && !busy ? null : true,
+      onclick: () => {
+        const others = [...state.librarySelected].filter((id) => !shown.includes(id));
+        setSelection(all ? others : [...others, ...shown]);
+      },
+    }),
+    h("span", { class: picked ? "bulk-count" : "bulk-count dim" },
+      picked
+        ? `${plural(picked, "TRACK")} SELECTED` + (hidden ? ` (${hidden} HIDDEN BY FILTER)` : "")
+        : "SELECT TRACKS FOR BULK ACTIONS"),
+    h("span", { class: "bulk-clear" }, action("CLEAR", "Untick every track", () => setSelection([]))),
+    h("span", { class: "bulk-actions" },
+      action("SAVE", "Save the selected files to this device (one ZIP)", bulkSave),
+      action("SEND", "Send the selected tracks to a chat room…", bulkSend),
+      action("CONV", "Convert or upgrade the selected tracks…", bulkConvert),
+      action("DEL", state.libraryScope === "all" && isCaptain()
+        ? "Delete the selected files from the hold for everyone…"
+        : "Remove the selected files from your library…", bulkRemove, "btn danger")));
+}
+
+/** Run a bulk action with the bar's buttons disabled meanwhile. */
+async function bulkBusy(run) {
+  if (state.libraryBusy) return;
+  state.libraryBusy = true;
+  renderBulkBar();
+  try {
+    await run();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    state.libraryBusy = false;
+    renderBulkBar();
+  }
+}
+
+/** Save the ticked files: one file as itself, several as one ZIP the browser streams to disk. */
+function bulkSave() {
+  const entries = selectedEntries();
+  if (entries.length === 1) {
+    const [entry] = entries;
+    saveLink(libraryFileUrl(entry.key.provider, entry.key.id, entry.output), String(entry.path), entry.title).click();
+    return;
+  }
+  bulkBusy(async () => {
+    const ticket = await api("/api/library/archive", { method: "POST", body: { files: entries.map(fileRef) } });
+    const link = h("a", { href: `/api/library/archive/${encodeURIComponent(ticket.id)}`, download: ticket.file_name, hidden: true });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    toast(`Saving ${plural(ticket.files, "file").toLowerCase()} (${formatBytes(ticket.bytes)}) as ${ticket.file_name}`
+      + (ticket.missing ? `; ${ticket.missing} no longer in the library` : ""));
+  });
+}
+
+async function bulkSend(btn) {
+  let joined;
+  try {
+    joined = (await api("/api/rooms")).filter((r) => r.joined);
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+  if (!joined.length) {
+    toast("Join a room in [5] MESSAGES first, then send tracks to it.", true);
+    return;
+  }
+  const entries = selectedEntries();
+  const choices = joined.map((room) => ({
+    id: room.id,
+    label: `#${room.name}`,
+    detail: room.topic || `${room.members} member${room.members === 1 ? "" : "s"}`,
+  }));
+  openFormatMenu(btn, (roomId) => bulkBusy(async () => {
+    const room = joined.find((r) => r.id === roomId);
+    const sent = await api(`/api/rooms/${roomId}/tracks/bulk`, {
+      method: "POST", body: { files: entries.map(fileRef) },
+    });
+    toast(`Sent ${plural(sent.length, "track").toLowerCase()} to #${room ? room.name : "room"}`);
+  }), { title: `SEND ${plural(entries.length, "TRACK")} TO ROOM:`, choices });
+}
+
+/**
+ * Convert the ticked tracks to one format, or look for lossless copies of
+ * them. Tracks that cannot (already in that format, same codec, from
+ * Soulseek…) are skipped and counted rather than failing the rest.
+ */
+function bulkConvert(btn) {
+  const entries = selectedEntries();
+  const able = (output) => entries.filter((entry) =>
+    (entry.convert_to || []).some((o) => o.output === output && o.available));
+  const upgradable = entries.filter((entry) => entry.upgrade && entry.upgrade.available);
+  const of = (n) => `${n} of ${entries.length} selected`;
+  // When no ticked track can, say why as the row menu would (the first
+  // track's reason; they are usually all the same).
+  const why = (note) => `Not possible${note ? `: ${note}` : " for any selected track"}`;
+  const choices = OUTPUTS
+    .filter((o) => entries.some((entry) => (entry.convert_to || []).some((c) => c.output === o.id)))
+    .map((o) => {
+      const n = able(o.id).length;
+      const first = entries.flatMap((entry) => entry.convert_to || []).find((c) => c.output === o.id);
+      return { id: o.id, label: o.label, detail: n ? `${of(n)}. ${o.detail}` : why(first && first.note), disabled: !n };
+    });
+  if (entries.some((entry) => entry.upgrade)) {
+    choices.unshift({
+      id: UPGRADE_CHOICE,
+      label: "Quality upgrade",
+      detail: upgradable.length
+        ? `${of(upgradable.length)}: look for a lossless copy on Soulseek`
+        : why((entries.find((entry) => entry.upgrade) || {}).upgrade.note),
+      disabled: !upgradable.length,
+    });
+  }
+  if (!choices.length) {
+    toast("None of the selected tracks can be converted", true);
+    return;
+  }
+  openFormatMenu(btn, (choice) => bulkBusy(async () => {
+    const upgrade = choice === UPGRADE_CHOICE;
+    const targets = upgrade ? upgradable : able(choice);
+    let queued = 0, added = 0;
+    const failed = [];
+    for (const [i, entry] of targets.entries()) {
+      const count = $("#lib-bulk .bulk-count");
+      if (count) count.textContent = `${upgrade ? "QUEUEING UPGRADES" : "QUEUEING CONVERSIONS"} ${i + 1}/${targets.length}…`;
+      try {
+        const res = await api(upgrade ? "/api/library/upgrade" : "/api/library/convert", {
+          method: "POST",
+          body: upgrade
+            ? { provider: entry.key.provider, id: entry.key.id, from: entry.output }
+            : { provider: entry.key.provider, id: entry.key.id, from: entry.output, to: choice },
+        });
+        if (res.job_ids.length) queued += 1; else added += 1;
+      } catch (err) {
+        failed.push(`“${entry.title}”: ${err.message}`);
+      }
+    }
+    const skipped = entries.length - targets.length;
+    const tracks = plural(queued, "track").toLowerCase();
+    const parts = [];
+    if (queued) {
+      parts.push(upgrade
+        ? `Looking for lossless copies of ${tracks} on Soulseek; progress in Downloads`
+        : `Converting ${tracks} to ${OUTPUT_SHORT[choice] || choice}; progress in Downloads`);
+    }
+    if (added) parts.push(`${added} already on disk, added to your library`);
+    if (skipped) parts.push(`${skipped} skipped (not possible for them)`);
+    if (failed.length) parts.push(`${failed.length} failed: ${failed[0]}${failed.length > 1 ? " …" : ""}`);
+    toast(parts.join(" · ") || "Nothing to do", failed.length > 0 && !queued && !added);
+    if (queued) await pollJobs();
+    if (added) await loadLibrary();
+  }), { title: `CONVERT ${plural(entries.length, "TRACK")} TO:`, choices });
+}
+
+async function bulkRemove() {
+  const entries = selectedEntries();
+  const everyone = isCaptain() && state.libraryScope === "all";
+  const n = entries.length;
+  const ok = await askDialog({
+    title: `DELETE ${plural(n, "TRACK")}?`,
+    text: (everyone
+      ? `${n === 1 ? "Its file is" : "Their files are"} deleted from disk for the whole crew.`
+      : `${n === 1 ? "It leaves" : "They leave"} your library. Files are deleted from disk unless someone else in the crew has them.`)
+      + " Only the format each row shows is removed; other formats stay. This cannot be undone.",
+    submit: `[ DELETE ${n} ]`,
+    danger: true,
+  });
+  if (!ok) return;
+  await bulkBusy(async () => {
+    const res = await api("/api/library/remove-many", {
+      method: "POST",
+      body: { files: entries.map(fileRef), scope: everyone ? "all" : "mine" },
+    });
+    const parts = [];
+    if (res.deleted) parts.push(`Deleted ${res.deleted}`);
+    if (res.unlisted) parts.push(`removed ${res.unlisted} (kept for the rest of the crew)`);
+    if (res.missing) parts.push(`${res.missing} already gone`);
+    if (res.failed.length) parts.push(`${res.failed.length} failed: ${res.failed[0]}${res.failed.length > 1 ? " …" : ""}`);
+    toast(parts.join(" · ") || "Nothing removed", res.failed.length > 0);
+    state.librarySelected.clear();
+    state.libraryAnchor = null;
+  });
+  await loadLibrary();
 }
 
 const SPECTRUM_SHORT = {
@@ -5553,6 +5835,8 @@ document.addEventListener("DOMContentLoaded", () => {
   chipGroup("#library-scope .chip", (chip) => {
     state.libraryScope = chip.dataset.scope;
     state.library = [];
+    state.librarySelected.clear();
+    state.libraryAnchor = null;
     loadLibrary();
   });
   chipGroup("#jobs-scope .chip", (chip) => {

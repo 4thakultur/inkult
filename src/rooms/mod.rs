@@ -56,6 +56,9 @@ const ONLINE_WINDOW: Duration = Duration::from_secs(30);
 /// Flood control: at most this many messages per user per window.
 const FLOOD_MAX: usize = 8;
 const FLOOD_WINDOW: Duration = Duration::from_secs(10);
+/// Most tracks shared in one go. They count as a single message for flood
+/// control, so the cap keeps one send from pushing a room's history out.
+pub const MAX_SHARED_AT_ONCE: usize = 50;
 const FILE_VERSION: u32 = 1;
 /// Wrong private-room passwords one user may try per window. Counted per
 /// account (everyone here is signed in), before hashing, so concurrent
@@ -843,6 +846,26 @@ impl Rooms {
             .await
     }
 
+    /// Share several library tracks, one message each, as one send for
+    /// flood control. Same caller duty as [`Rooms::share_track`].
+    pub async fn share_tracks(
+        &self,
+        actor: &User,
+        id: RoomId,
+        tracks: Vec<SharedTrack>,
+    ) -> Result<Vec<MessageView>, RoomError> {
+        if tracks.len() > MAX_SHARED_AT_ONCE {
+            return Err(RoomError::Limit(format!(
+                "at most {MAX_SHARED_AT_ONCE} tracks can be sent at once"
+            )));
+        }
+        let messages = tracks
+            .into_iter()
+            .map(|track| (MessageKind::Track, String::new(), Some(track)))
+            .collect();
+        self.append_many(actor, id, messages).await
+    }
+
     async fn append(
         &self,
         actor: &User,
@@ -851,6 +874,22 @@ impl Rooms {
         text: String,
         track: Option<SharedTrack>,
     ) -> Result<MessageView, RoomError> {
+        let mut sent = self
+            .append_many(actor, id, vec![(kind, text, track)])
+            .await?;
+        sent.pop()
+            .ok_or_else(|| RoomError::InvalidInput("nothing to send".into()))
+    }
+
+    async fn append_many(
+        &self,
+        actor: &User,
+        id: RoomId,
+        messages: Vec<(MessageKind, String, Option<SharedTrack>)>,
+    ) -> Result<Vec<MessageView>, RoomError> {
+        if messages.is_empty() {
+            return Err(RoomError::InvalidInput("nothing to send".into()));
+        }
         let mut inner = self.inner.lock().await;
         if !inner
             .visible_room(id, actor.id)?
@@ -861,14 +900,17 @@ impl Rooms {
         }
         inner.allow_message(actor.id)?;
         let room = inner.room_mut(id)?;
-        let message = room.push_with_track(actor, kind, text, track);
-        if let Some(member) = room.members.get_mut(&actor.id) {
-            member.last_read = message.seq;
+        let sent: Vec<StoredMessage> = messages
+            .into_iter()
+            .map(|(kind, text, track)| room.push_with_track(actor, kind, text, track))
+            .collect();
+        if let (Some(member), Some(last)) = (room.members.get_mut(&actor.id), sent.last()) {
+            member.last_read = last.seq;
         }
         let snapshot = room.clone();
         self.persist(&snapshot).await;
         inner.touch(id, actor.id);
-        Ok(MessageView::new(&message, actor.id))
+        Ok(sent.iter().map(|m| MessageView::new(m, actor.id)).collect())
     }
 
     /// The track shared in message `seq`, for a member of the room. This is
@@ -1195,6 +1237,52 @@ mod tests {
         assert!(matches!(
             rooms.create(&alice, "toomany", None, None).await,
             Err(RoomError::Limit(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn tracks_sent_together_count_as_one_message() {
+        use crate::domain::provider::ProviderKind;
+        use crate::domain::quality::Codec;
+
+        let dir = tempfile::tempdir().unwrap();
+        let alice = user(1, "alice", Role::Pirate);
+        let rooms = open(dir.path()).await;
+        let id = rooms
+            .create(&alice, "crate", None, None)
+            .await
+            .unwrap()
+            .room
+            .id;
+        let track = |n: usize| SharedTrack {
+            key: TrackKey {
+                provider: ProviderKind::SoundCloud,
+                id: n.to_string(),
+            },
+            output: OutputFormat::Original,
+            title: format!("Track {n}"),
+            artists: vec!["Someone".into()],
+            album: None,
+            artwork_url: None,
+            source_url: format!("https://soundcloud.com/someone/{n}"),
+            quality: QualityReport::new(Codec::Aac, "m4a".into(), Some(160), None, None, None),
+        };
+        let tracks: Vec<_> = (0..MAX_SHARED_AT_ONCE).map(track).collect();
+        let sent = rooms.share_tracks(&alice, id, tracks).await.unwrap();
+        assert_eq!(sent.len(), MAX_SHARED_AT_ONCE);
+        assert!(sent.windows(2).all(|w| w[1].seq == w[0].seq + 1));
+        // One flood slot used: the rest of the window is still free.
+        for i in 1..FLOOD_MAX {
+            rooms.post(&alice, id, &format!("msg {i}")).await.unwrap();
+        }
+        let too_many: Vec<_> = (0..=MAX_SHARED_AT_ONCE).map(track).collect();
+        assert!(matches!(
+            rooms.share_tracks(&alice, id, too_many).await,
+            Err(RoomError::Limit(_))
+        ));
+        assert!(matches!(
+            rooms.share_tracks(&alice, id, Vec::new()).await,
+            Err(RoomError::InvalidInput(_))
         ));
     }
 

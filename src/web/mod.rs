@@ -34,8 +34,8 @@ use sha2::{Digest, Sha256};
 use tokio_util::io::ReaderStream;
 
 use crate::app::{
-    App, AppError, ConvertRequest, EnqueueRequest, LibraryScope, NewUser, RemoveRequest,
-    SettingsUpdate, StreamRequest, UpgradeRequest, UserUpdate,
+    App, AppError, BulkRequest, ConvertRequest, EnqueueRequest, LibraryScope, NewUser,
+    RemoveRequest, SettingsUpdate, StreamRequest, UpgradeRequest, UserUpdate,
 };
 use crate::auth::{AuthError, Authenticated, Login, LoginOutcome, User, UserId};
 use crate::domain::provider::ProviderKind;
@@ -124,6 +124,9 @@ pub fn router(app: AppState, clients: Arc<ClientPolicy>) -> Router {
         .route("/api/library/convert", post(convert))
         .route("/api/library/upgrade", post(upgrade))
         .route("/api/library/remove", post(remove_from_library))
+        .route("/api/library/remove-many", post(remove_many_from_library))
+        .route("/api/library/archive", post(prepare_archive))
+        .route("/api/library/archive/{id}", get(download_archive))
         .route("/api/files/{provider}/{id}/{output}", get(download_file))
         .route("/api/stream", post(prepare_stream))
         .route("/api/stream/{id}", get(stream))
@@ -947,6 +950,64 @@ async fn remove_from_library(
 ) -> Result<impl IntoResponse, AppError> {
     let removal = app.remove_from_library(&user, body).await?;
     Ok(Json(json!({ "removal": removal })))
+}
+
+async fn remove_many_from_library(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Json(body): Json<BulkRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(app.remove_many_from_library(&user, body).await?))
+}
+
+async fn prepare_archive(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Json(body): Json<BulkRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(app.prepare_archive(&user, body).await?))
+}
+
+/// Stream a prepared archive as a ZIP attachment, built as it is sent.
+/// Its length is known up front; if a file cannot be read midway the body
+/// ends short of it, so the browser reports a failed download instead of
+/// saving a broken archive.
+async fn download_archive(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let prepared = app.prepared_archive(&user, &id)?;
+    let length = crate::library::archive::archive_len(&prepared.files);
+    let (mut writer, reader) = tokio::io::duplex(256 * 1024);
+    let username = user.username.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::library::archive::write_archive(&prepared.files, &mut writer).await {
+            // A closed connection (the user cancelled) is not worth a warning.
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                tracing::debug!(user = %username, "archive download stopped by the client");
+            } else {
+                tracing::warn!(user = %username, error = %e, "archive download failed");
+            }
+        }
+    });
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&content_disposition(&prepared.file_name)) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let body = Body::from_stream(ReaderStream::new(reader));
+    Ok((headers, body).into_response())
 }
 
 /// Stream a library file to the browser as an attachment.

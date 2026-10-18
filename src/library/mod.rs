@@ -12,6 +12,7 @@
 //! accounts existed have no owners and are visible to captains only until
 //! someone downloads them.
 
+pub mod archive;
 pub mod layout;
 pub mod place;
 pub mod sanitize;
@@ -236,7 +237,36 @@ impl Library {
         output: OutputFormat,
         from: RemoveFrom,
     ) -> Result<Option<Removal>, LibraryError> {
+        let mut results = self.remove_many(&[(key.clone(), output)], from).await;
+        results.pop().unwrap_or(Ok(None))
+    }
+
+    /// [`Library::remove`] for several files, with one index write: one
+    /// result per item, in order. A failure leaves that item listed and
+    /// does not stop the others.
+    pub async fn remove_many(
+        &self,
+        items: &[(TrackKey, OutputFormat)],
+        from: RemoveFrom,
+    ) -> Vec<Result<Option<Removal>, LibraryError>> {
         let mut index = self.index.lock().await;
+        let mut results = Vec::with_capacity(items.len());
+        for (key, output) in items {
+            results.push(self.remove_locked(&mut index, key, *output, from).await);
+        }
+        if results.iter().any(|r| matches!(r, Ok(Some(_)))) {
+            persist(&self.index_path, &index).await;
+        }
+        results
+    }
+
+    async fn remove_locked(
+        &self,
+        index: &mut IndexFile,
+        key: &TrackKey,
+        output: OutputFormat,
+        from: RemoveFrom,
+    ) -> Result<Option<Removal>, LibraryError> {
         let Some(pos) = index
             .entries
             .iter()
@@ -250,7 +280,6 @@ impl Library {
                 return Ok(None);
             }
             if !entry.owners.is_empty() {
-                persist(&self.index_path, &index).await;
                 return Ok(Some(Removal::Unlisted));
             }
         }
@@ -272,7 +301,6 @@ impl Library {
                 .map_err(io_err(format!("deleting {}", path.display())))?;
         }
         index.entries.remove(pos);
-        persist(&self.index_path, &index).await;
         Ok(Some(Removal::Deleted))
     }
 
@@ -950,6 +978,52 @@ mod tests {
         assert!(!root.path().join(&entry.path).exists());
         assert!(!root.path().join("Artist/Album").exists());
         assert!(root.path().join("Artist/Singles/notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn bulk_removal_reports_each_file_and_writes_the_index_once() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let index_path = data.path().join("library.json");
+        let library = Library::open(root.path().into(), index_path.clone())
+            .await
+            .unwrap();
+        let (anne, jack) = (UserId(1), UserId(2));
+        let mut files = Vec::new();
+        for (id, owners) in [("1", vec![anne]), ("2", vec![anne, jack])] {
+            let staged = data.path().join(format!("media{id}.mp3"));
+            std::fs::write(&staged, id).unwrap();
+            let entry = library
+                .import(
+                    staged,
+                    &meta(id),
+                    quality(),
+                    OutputFormat::Original,
+                    "mp3",
+                    owners.into_iter().collect(),
+                )
+                .await
+                .unwrap();
+            files.push(root.path().join(&entry.path));
+        }
+        let items = [
+            (meta("1").key(), OutputFormat::Original),
+            (meta("2").key(), OutputFormat::Original),
+            (meta("3").key(), OutputFormat::Original),
+        ];
+        let results = library.remove_many(&items, RemoveFrom::Only(anne)).await;
+        let results: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+        assert_eq!(
+            results,
+            [Some(Removal::Deleted), Some(Removal::Unlisted), None]
+        );
+        assert!(!files[0].exists());
+        assert!(files[1].exists(), "jack still has it");
+
+        let reopened = Library::open(root.path().into(), index_path).await.unwrap();
+        let left = reopened.entries().await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].owners, BTreeSet::from([jack]));
     }
 
     #[test]

@@ -20,6 +20,7 @@ use crate::domain::length::{Clock, HiddenTooLong};
 use crate::domain::provider::{ProviderKind, TrackKey};
 use crate::domain::quality::OutputFormat;
 use crate::jobs::{EnqueueError, JobId, JobManager, JobSnapshot, Viewer};
+use crate::library::archive::{self, ArchiveFile, PreparedArchive, PreparedArchives};
 use crate::library::{Library, LibraryEntry, LibraryError, Removal, RemoveFrom};
 use crate::metadata::{clean_artists, clean_text};
 use crate::playback::range::ByteRange;
@@ -217,6 +218,52 @@ pub struct RemoveRequest {
     pub scope: LibraryScope,
 }
 
+/// Most files one bulk library action takes: far more than anyone selects
+/// by hand, small enough that a request stays cheap to check.
+pub const MAX_BULK_FILES: usize = 1000;
+
+/// One format of a library track, identified like a file download.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileRef {
+    pub provider: String,
+    pub id: String,
+    pub output: String,
+}
+
+/// Several library files to act on together.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BulkRequest {
+    pub files: Vec<FileRef>,
+    #[serde(default)]
+    pub scope: LibraryScope,
+}
+
+/// What a bulk removal did, file by file counted.
+#[derive(Debug, Default, Serialize)]
+pub struct BulkRemoval {
+    pub deleted: usize,
+    /// Left the user's library; others still have the file.
+    pub unlisted: usize,
+    /// Not (or no longer) in the library the request named.
+    pub missing: usize,
+    /// "Title: reason" for each file that could not be removed.
+    pub failed: Vec<String>,
+}
+
+/// A ZIP download made ready by [`App::prepare_archive`].
+#[derive(Debug, Serialize)]
+pub struct ArchiveTicket {
+    /// Fetch it from `/api/library/archive/{id}`.
+    pub id: String,
+    pub file_name: String,
+    pub files: usize,
+    pub bytes: u64,
+    /// Selected files that are no longer in the library, left out.
+    pub missing: usize,
+}
+
 /// Which part of the shared library (or download queue) to act on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -345,6 +392,7 @@ pub struct App {
     ytdlp: Arc<YtDlp>,
     ffmpeg: Arc<Ffmpeg>,
     tool_status: RwLock<Vec<ToolStatus>>,
+    archives: PreparedArchives,
 }
 
 impl App {
@@ -375,6 +423,7 @@ impl App {
             ytdlp,
             ffmpeg,
             tool_status: RwLock::new(Vec::new()),
+            archives: PreparedArchives::default(),
         };
         app.refresh_tools().await;
         app
@@ -1022,6 +1071,183 @@ impl App {
             "removed from library"
         );
         Ok(removal)
+    }
+
+    /// [`App::remove_from_library`] for several files at once. Files that
+    /// are gone are counted, failures listed; neither stops the rest.
+    pub async fn remove_many_from_library(
+        &self,
+        actor: &User,
+        request: BulkRequest,
+    ) -> Result<BulkRemoval, AppError> {
+        let from = match request.scope {
+            LibraryScope::Mine => RemoveFrom::Only(actor.id),
+            LibraryScope::All => {
+                Self::require_captain(actor)?;
+                RemoveFrom::Everyone
+            }
+        };
+        let files = Self::bulk_files(request.files)?;
+        let mut summary = BulkRemoval::default();
+        let mut items = Vec::with_capacity(files.len());
+        for file in &files {
+            match Self::parse_file_ref(file) {
+                Some(item) => items.push(item),
+                None => summary.missing += 1,
+            }
+        }
+        let results = self.library.remove_many(&items, from).await;
+        for ((key, output), result) in items.iter().zip(results) {
+            match result {
+                Ok(Some(removal)) => {
+                    tracing::info!(
+                        user = %actor.username,
+                        track = %key,
+                        output = output.label(),
+                        ?removal,
+                        "removed from library"
+                    );
+                    match removal {
+                        Removal::Deleted => summary.deleted += 1,
+                        Removal::Unlisted => summary.unlisted += 1,
+                    }
+                }
+                Ok(None) => summary.missing += 1,
+                Err(e) => {
+                    tracing::error!(user = %actor.username, track = %key, error = %e, "bulk removal failed");
+                    let title = match self.library.find(key, *output).await {
+                        Some(entry) => entry.title,
+                        None => key.to_string(),
+                    };
+                    summary.failed.push(format!("{title}: {e}"));
+                }
+            }
+        }
+        Ok(summary)
+    }
+
+    /// Check a set of library files and get them ready to be fetched as
+    /// one ZIP, folders kept as in the library. Files no longer there are
+    /// left out and counted.
+    pub async fn prepare_archive(
+        &self,
+        actor: &User,
+        request: BulkRequest,
+    ) -> Result<ArchiveTicket, AppError> {
+        let refs = Self::bulk_files(request.files)?;
+        let mut files = Vec::with_capacity(refs.len());
+        let mut missing = 0;
+        for file in &refs {
+            let Ok((entry, path)) = self
+                .library_entry(actor, &file.provider, &file.id, &file.output)
+                .await
+            else {
+                missing += 1;
+                continue;
+            };
+            let Ok(meta) = tokio::fs::metadata(&path).await else {
+                missing += 1;
+                continue;
+            };
+            let name = archive::entry_name(&entry.path)
+                .or_else(|| entry.path.file_name()?.to_str().map(str::to_owned))
+                .unwrap_or_else(|| "track".to_owned());
+            files.push(ArchiveFile {
+                name: archive::fit_name(name),
+                path,
+                size: meta.len(),
+                modified: meta.modified().ok(),
+            });
+        }
+        if files.is_empty() {
+            return Err(AppError::BadRequest(
+                "none of the selected files are in your library any more".into(),
+            ));
+        }
+        archive::dedupe_names(&mut files);
+        let file_name = format!(
+            "inkult-{}-track{}.zip",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        );
+        let ticket = ArchiveTicket {
+            id: String::new(),
+            file_name: file_name.clone(),
+            files: files.len(),
+            bytes: archive::archive_len(&files),
+            missing,
+        };
+        tracing::info!(user = %actor.username, files = ticket.files, bytes = ticket.bytes, "archive prepared");
+        let id = self.archives.insert(actor.id, file_name, files);
+        Ok(ArchiveTicket { id, ..ticket })
+    }
+
+    /// An archive the actor prepared, to be sent.
+    pub fn prepared_archive(&self, actor: &User, id: &str) -> Result<PreparedArchive, AppError> {
+        self.archives.get(id, actor.id).ok_or(AppError::NotFound)
+    }
+
+    /// Share several library tracks in a room at once. Either all of them
+    /// are sent or (when one is not the actor's to share) none.
+    pub async fn share_tracks(
+        &self,
+        actor: &User,
+        room: RoomId,
+        request: BulkRequest,
+    ) -> Result<Vec<MessageView>, AppError> {
+        let files = Self::bulk_files(request.files)?;
+        let mut entries = Vec::with_capacity(files.len());
+        for file in &files {
+            let (entry, _) = self
+                .library_entry(actor, &file.provider, &file.id, &file.output)
+                .await
+                .map_err(|_| {
+                    AppError::BadRequest(
+                        "a selected track is no longer in your library; nothing was sent".into(),
+                    )
+                })?;
+            entries.push(entry);
+        }
+        let tracks = entries.iter().map(SharedTrack::from).collect();
+        let mut messages = self.rooms.share_tracks(actor, room, tracks).await?;
+        for (message, entry) in messages.iter_mut().zip(&entries) {
+            message.track_status = Some(if entry.owners.contains(&actor.id) {
+                TrackStatus::InLibrary
+            } else {
+                TrackStatus::Available
+            });
+        }
+        tracing::info!(by = %actor.username, tracks = messages.len(), "tracks shared in chat room");
+        Ok(messages)
+    }
+
+    /// The files of a bulk request, each once, in the order given.
+    fn bulk_files(files: Vec<FileRef>) -> Result<Vec<FileRef>, AppError> {
+        if files.is_empty() {
+            return Err(AppError::BadRequest("no files selected".into()));
+        }
+        if files.len() > MAX_BULK_FILES {
+            return Err(AppError::BadRequest(format!(
+                "at most {MAX_BULK_FILES} files at a time"
+            )));
+        }
+        let mut seen = std::collections::HashSet::new();
+        Ok(files
+            .into_iter()
+            .filter(|f| seen.insert(f.clone()))
+            .collect())
+    }
+
+    fn parse_file_ref(file: &FileRef) -> Option<(TrackKey, OutputFormat)> {
+        let provider: ProviderKind = file.provider.parse().ok()?;
+        let output: OutputFormat = file.output.parse().ok()?;
+        Some((
+            TrackKey {
+                provider,
+                id: file.id.clone(),
+            },
+            output,
+        ))
     }
 
     /// Find a library entry the actor may access, and its file.

@@ -1,6 +1,6 @@
 [package]
 name = "inkult"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Self-hosted music downloader and library manager"
@@ -10,6 +10,7 @@ license = "AGPL-3.0-or-later"
 argon2 = "0.5.3"
 async-trait = "0.1.92"
 axum = "0.8.9"
+crc32fast = "1.5.0"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 hmac = "0.12.1"
 hyper = { version = "1.12.0", features = ["server", "http1"] }

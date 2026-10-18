@@ -150,6 +150,15 @@ Tracks you already downloaded play from the library file.
 - **Delete** a track from your library. The file is only removed from disk
   once no other user owns it; a captain can delete it for everyone. Empty
   artist and album folders are cleaned up.
+- **Bulk actions.** Tick tracks (shift-click ticks a range, the bar's box
+  ticks everything listed) to save, send, convert, upgrade or delete them
+  together. Each ticked track acts in the format its row shows. Saving
+  several files downloads one ZIP that keeps the `Artist/Album/` folders. It
+  is streamed as it is built (no temporary copy on the server, files are not
+  recompressed) and works past 4 GB. Up to 1000 files per action, and up to
+  50 tracks per send to a chat room. Tracks that can't take an action (for
+  example a format already in your library) are skipped and counted, not
+  failed.
 
 ### Metadata
 

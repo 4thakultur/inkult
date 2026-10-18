@@ -1073,7 +1073,28 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
 
 .filter-wrap { display: flex; align-items: center; gap: 8px; border-bottom: 1px dashed var(--line); width: 300px; max-width: 100%; }
 
-.lib-list { grid-template-columns: var(--art) minmax(0, 1fr) minmax(0, .6fr) max-content minmax(16ch, .8fr) auto; }
+.lib-list { grid-template-columns: max-content var(--art) minmax(0, 1fr) minmax(0, .6fr) max-content minmax(16ch, .8fr) auto; }
+/* Bulk selection: a tick per row, and a bar acting on the ticked tracks.
+   The bar follows the list and sticks above the player, so it stays in
+   reach however far down the ticking went. */
+.pick {
+  background: none; border: 0; padding: 0; cursor: var(--cursor-hot); color: var(--mid); white-space: pre;
+}
+.pick::before { content: "[ ]"; }
+.pick[aria-checked="true"]::before { content: "[x]"; color: var(--bright); }
+.pick[aria-checked="mixed"]::before { content: "[-]"; }
+.pick:hover:not(:disabled) { color: var(--bright); }
+.pick:disabled { color: var(--dim); cursor: var(--cursor-idle); }
+.lib-row.selected { background: rgb(var(--fg-rgb) / .12); }
+.lib-row.selected .title { color: var(--bright); }
+.lib-bulk {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 6px; margin-top: 10px;
+  position: sticky; bottom: calc(var(--player-space) + 8px); z-index: 15;
+  background: var(--bg); border: 1px dashed var(--faint);
+}
+.lib-bulk.active { border-color: var(--line); }
+.bulk-actions { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-left: auto; }
+.bulk-clear { order: 1; }
 .quality-cell { color: var(--mid); }
 .added-cell { color: var(--mid); white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* "added" only prefixes the date where the column heading is gone. */
@@ -1303,18 +1324,19 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
   .tracks { grid-template-columns: var(--art) minmax(0, 1fr) auto; }
   .track .album, .track .duration, .track .provider-cell { display: none; }
   /* Quality reads as a line under the artist; buttons keep the right edge. */
-  .lib-list { grid-template-columns: var(--art) minmax(0, 1fr) auto; }
+  .lib-list { grid-template-columns: max-content var(--art) minmax(0, 1fr) auto; }
   .lib-row { row-gap: 2px; align-items: start; }
   .lib-row .album, .lib-row.list-head .quality-cell, .lib-row.list-head .added-cell { display: none; }
-  .lib-row .art-play { grid-row: 1 / 3; }
-  .lib-row .title-cell { grid-column: 2; grid-row: 1; }
+  .lib-row .pick { grid-column: 1; grid-row: 1 / 3; align-self: center; }
+  .lib-row .art-play { grid-column: 2; grid-row: 1 / 3; }
+  .lib-row .title-cell { grid-column: 3; grid-row: 1; }
   .lib-row .quality-cell {
-    grid-column: 2; grid-row: 2; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px;
+    grid-column: 3; grid-row: 2; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px;
   }
   .lib-row .quality-cell > div { display: inline; }
-  .lib-row .added-cell { grid-column: 2; grid-row: 3; color: var(--dim); }
+  .lib-row .added-cell { grid-column: 3; grid-row: 3; color: var(--dim); }
   .added-label { display: inline; }
-  .lib-row .row-actions { grid-column: 3; grid-row: 1 / 4; align-self: center; }
+  .lib-row .row-actions { grid-column: 4; grid-row: 1 / 4; align-self: center; }
   /* No keyboard shortcuts on these screens; all tabs fit one row without them. */
   .menubar { justify-content: space-between; gap: 6px 10px; }
   .nav-item .key { display: none; }
@@ -1586,9 +1608,17 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   /* Title gets the full width; quality reads as its third line, then the
      row's buttons. */
   .lib-list { display: block; }
-  .lib-row { grid-template-columns: var(--art) minmax(0, 1fr); column-gap: 14px; align-items: start; }
+  .lib-row { grid-template-columns: max-content var(--art) minmax(0, 1fr); column-gap: 14px; align-items: start; }
   .lib-row .quality-cell, .lib-row .added-cell { font-size: .9em; }
-  .lib-row .row-actions { grid-column: 2; grid-row: 4; justify-content: flex-start; gap: 4px 14px; margin-top: 4px; }
+  .lib-row .row-actions { grid-column: 3; grid-row: 4; justify-content: flex-start; gap: 4px 14px; margin-top: 4px; }
+  /* Screen height is scarce: the bar only stays in view while tracks are ticked. */
+  .lib-bulk { position: static; }
+  .lib-bulk.active { position: sticky; }
+  /* Count and CLEAR on one line, the actions on the next. */
+  .lib-bulk { gap: 0 12px; padding: 2px 8px; }
+  .bulk-count { flex: 1; }
+  .bulk-clear { order: 0; }
+  .bulk-actions { margin-left: 0; gap: 0 16px; flex-basis: 100%; }
   .job { padding: 16px 2px; gap: 12px; }
   /* The cancel / save button sits in the title line's corner instead of
      taking a column off every line of the card. */
@@ -1684,6 +1714,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
     min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
   }
   .icon-btn { min-width: 44px; }
+  .pick { min-width: 44px; min-height: 44px; }
   /* The fold tab straddles the player's top rule; keep it from towering. */
   .player-fold { min-height: 34px; }
   .irc-room { min-height: 44px; }
@@ -1698,6 +1729,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
 /* A tap leaves :hover stuck on touch devices; drop the row highlight there. */
 @media (hover: none) {
   .track:hover, .lib-row:hover { background: none; }
+  .lib-row.selected:hover { background: rgb(var(--fg-rgb) / .12); }
 }
 
 /* Animated cursor overlay (Blazing): follows the mouse via a
