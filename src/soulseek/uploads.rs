@@ -99,8 +99,9 @@ pub(super) struct Uploads {
     wanted: AtomicBool,
     rules: SoulseekRules,
     owner: UserId,
-    /// The owner's rank, which the sharing rule may depend on.
-    captain: AtomicBool,
+    /// The owner's rank when the session started; the rules know of any
+    /// change since (the sharing rule may depend on it).
+    started_as: Role,
     index: Mutex<Arc<ShareIndex>>,
     items: Mutex<Vec<Upload>>,
     next_id: Mutex<u64>,
@@ -116,7 +117,7 @@ impl Uploads {
             wanted: AtomicBool::new(wanted),
             rules,
             owner,
-            captain: AtomicBool::new(role.is_captain()),
+            started_as: role,
             index: Mutex::new(Arc::new(ShareIndex::default())),
             items: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
@@ -132,11 +133,7 @@ impl Uploads {
     }
 
     fn role(&self) -> Role {
-        if self.captain.load(Ordering::Relaxed) {
-            Role::Captain
-        } else {
-            Role::Pirate
-        }
+        self.rules.rank(self.owner, self.started_as)
     }
 
     /// Whether the rules let the owner share.
@@ -250,15 +247,6 @@ impl Session {
             .await;
         self.apply_sharing().await;
         Ok(())
-    }
-
-    /// The owner's rank or their overrides changed: the sharing rule may
-    /// now treat them differently.
-    pub(super) async fn set_role(self: &Arc<Self>, role: Role) {
-        self.uploads
-            .captain
-            .store(role.is_captain(), Ordering::Relaxed);
-        self.apply_sharing().await;
     }
 
     /// Bring what is shared in line with the user's choice and the rules:

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::auth::{
-    AuthConfig, DEFAULT_TOTP_ISSUER, MAX_TOTP_ISSUER_CHARS, TwoFactorPolicy, UserId,
+    AuthConfig, DEFAULT_TOTP_ISSUER, MAX_TOTP_ISSUER_CHARS, Role, TwoFactorPolicy, UserId,
 };
 use crate::domain::length::{MaxTrackLength, TrackLengthLimit};
 use crate::soulseek::{MemberRules, SoulseekAccess, SoulseekRules};
@@ -140,23 +140,39 @@ impl ServerSettings {
     }
 
     /// Whether switching to `next` can let someone share who could not
-    /// before: the switch, or a member's own sharing choice, widened.
-    pub fn widens_sharing(&self, next: &Self) -> bool {
-        let member = |settings: &Self, user| {
-            settings
-                .soulseek_members
-                .get(user)
+    /// before, by any route: the sharing switch, the Soulseek switch, or a
+    /// member's choices. Judged on what the rules add up to for every
+    /// member with choices (of their rank, from `role_of`; of either rank
+    /// if unknown) and for everyone else, of either rank. A member's
+    /// sharing choice raised counts even while a switch still keeps them
+    /// out, as it lets them share once that switch opens.
+    pub fn widens_sharing(&self, next: &Self, role_of: impl Fn(UserId) -> Option<Role>) -> bool {
+        const EITHER: [Role; 2] = [Role::Captain, Role::Pirate];
+        let member = |settings: &Self, user: Option<UserId>| {
+            user.and_then(|user| settings.soulseek_members.get(&user))
                 .copied()
                 .unwrap_or_default()
         };
-        self.soulseek_sharing.is_widened_by(next.soulseek_sharing)
-            || (self.soulseek_members.keys())
-                .chain(next.soulseek_members.keys())
-                .any(|user| {
-                    member(self, user)
-                        .sharing
-                        .is_widened_by(member(next, user).sharing)
-                })
+        let may_share = |settings: &Self, user, role| {
+            member(settings, user).may_share(settings.soulseek, settings.soulseek_sharing, role)
+        };
+        let members = self
+            .soulseek_members
+            .keys()
+            .chain(next.soulseek_members.keys())
+            .copied();
+        members.map(Some).chain([None]).any(|user| {
+            let roles = match user.and_then(&role_of) {
+                Some(role) => &[role][..],
+                None => &EITHER[..],
+            };
+            member(self, user)
+                .sharing
+                .is_widened_by(member(next, user).sharing)
+                || roles
+                    .iter()
+                    .any(|&role| may_share(next, user, role) && !may_share(self, user, role))
+        })
     }
 
     /// The live Soulseek rules these settings describe.
@@ -474,10 +490,77 @@ mod tests {
             )]),
             ..ServerSettings::default()
         };
-        assert!(before.widens_sharing(&with(Override::Allowed)));
-        assert!(!before.widens_sharing(&with(Override::Blocked)));
-        assert!(with(Override::Blocked).widens_sharing(&before));
-        assert!(!with(Override::Allowed).widens_sharing(&before));
+        assert!(before.widens_sharing(&with(Override::Allowed), |_| None));
+        assert!(!before.widens_sharing(&with(Override::Blocked), |_| None));
+        assert!(with(Override::Blocked).widens_sharing(&before, |_| None));
+        assert!(!with(Override::Allowed).widens_sharing(&before, |_| None));
+    }
+
+    /// Sharing needs Soulseek: letting more people use it lets more share
+    /// whenever the sharing switch already covers them.
+    #[test]
+    fn letting_more_use_soulseek_can_widen_sharing() {
+        use crate::soulseek::Override;
+        let captains_only = ServerSettings {
+            soulseek: SoulseekAccess::Captains,
+            soulseek_sharing: SoulseekAccess::Everyone,
+            ..ServerSettings::default()
+        };
+        let everyone = ServerSettings {
+            soulseek: SoulseekAccess::Everyone,
+            ..captains_only.clone()
+        };
+        assert!(
+            captains_only.widens_sharing(&everyone, |_| None),
+            "pirates can share"
+        );
+        let off = ServerSettings {
+            soulseek: SoulseekAccess::Off,
+            ..captains_only.clone()
+        };
+        assert!(
+            off.widens_sharing(&captains_only, |_| None),
+            "captains can share"
+        );
+        // Not when the sharing switch keeps them out anyway.
+        let no_sharing = |soulseek| ServerSettings {
+            soulseek,
+            soulseek_sharing: SoulseekAccess::Off,
+            ..ServerSettings::default()
+        };
+        assert!(
+            !no_sharing(SoulseekAccess::Off)
+                .widens_sharing(&no_sharing(SoulseekAccess::Everyone), |_| None)
+        );
+
+        // A member unblocked, or let in past the switch.
+        let member = |soulseek| ServerSettings {
+            soulseek_members: BTreeMap::from([(
+                UserId(7),
+                MemberRules {
+                    soulseek,
+                    sharing: Override::Auto,
+                },
+            )]),
+            ..captains_only.clone()
+        };
+        assert!(member(Override::Blocked).widens_sharing(&captains_only, |_| None));
+        assert!(captains_only.widens_sharing(&member(Override::Allowed), |_| None));
+        assert!(!member(Override::Allowed).widens_sharing(&captains_only, |_| None));
+
+        // Unblocking a pirate whom the captains-only sharing switch keeps
+        // from sharing anyway lets nobody share; unblocking a captain does.
+        let captains_share = |soulseek| ServerSettings {
+            soulseek: SoulseekAccess::Everyone,
+            soulseek_sharing: SoulseekAccess::Captains,
+            ..member(soulseek)
+        };
+        let unblock = |role| {
+            captains_share(Override::Blocked)
+                .widens_sharing(&captains_share(Override::Auto), |_| Some(role))
+        };
+        assert!(!unblock(Role::Pirate));
+        assert!(unblock(Role::Captain));
     }
 
     #[test]

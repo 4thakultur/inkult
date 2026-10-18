@@ -1829,7 +1829,11 @@ impl App {
             return Ok(next);
         }
         let relaxed = current.two_factor.is_weakened_by(next.two_factor);
-        let sharing_widened = current.widens_sharing(&next);
+        let roles: HashMap<UserId, Role> = (self.auth.list().await)
+            .into_iter()
+            .map(|user| (user.id, user.role))
+            .collect();
+        let sharing_widened = current.widens_sharing(&next, |id| roles.get(&id).copied());
         if relaxed || sharing_widened {
             let password = password.ok_or_else(|| {
                 AppError::BadRequest(if relaxed {
@@ -1977,20 +1981,21 @@ impl App {
             ));
         }
         self.auth.delete(id).await?;
-        {
-            let mut current = self.settings.lock().await;
-            if current.soulseek_members.contains_key(&id) {
-                let mut next = current.clone();
-                next.soulseek_members.remove(&id);
-                // Narrows only, so it never needs confirming.
-                self.commit_settings(actor, &mut current, next, None, None)
-                    .await?;
-            }
-        }
         self.jobs.forget_user(id);
         self.soulseek.forget_user(id).await;
         self.rooms.forget_user(id).await;
         self.library.remove_owner(id).await;
+        // Last, once nothing of theirs runs: dropping a block would read as
+        // letting them in, but they are gone. So no confirmation (and
+        // nothing above can be skipped by one being refused). Ids are
+        // random, so a choice left over after a failed save never applies
+        // to anyone else.
+        let mut current = self.settings.lock().await;
+        if current.soulseek_members.contains_key(&id) {
+            let mut next = current.clone();
+            next.soulseek_members.remove(&id);
+            self.settings.replace(&mut current, next).await?;
+        }
         Ok(())
     }
 }

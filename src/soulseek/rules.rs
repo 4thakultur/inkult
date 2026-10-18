@@ -10,7 +10,7 @@
 //! what is shared is uploaded from the host's address: these rules let
 //! whoever runs the server decide that, above each user's own choice.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -36,13 +36,6 @@ impl SoulseekAccess {
             Self::Captains => role.is_captain(),
             Self::Off => false,
         }
-    }
-
-    /// Whether switching to `other` lets someone do what they could not.
-    pub fn is_widened_by(self, other: Self) -> bool {
-        [Role::Captain, Role::Pirate]
-            .into_iter()
-            .any(|role| other.allows(role) && !self.allows(role))
     }
 
     /// Like `Deserialize`, but also reads the yes/no of settings files
@@ -100,7 +93,8 @@ impl Override {
         }
     }
 
-    /// Whether switching to `other` can let the member do more.
+    /// Whether switching to `other` can let the member do more, now or
+    /// once a switch is widened.
     pub fn is_widened_by(self, other: Self) -> bool {
         other.rank() > self.rank()
     }
@@ -128,6 +122,20 @@ impl MemberRules {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
+
+    /// Whether a member with these choices (of `role`) may use Soulseek
+    /// under the switch `access`.
+    pub fn may_use(self, access: SoulseekAccess, role: Role) -> bool {
+        self.soulseek.decide(access, role)
+    }
+
+    /// Whether they may share under the switches `access` and `sharing`.
+    /// Sharing needs Soulseek: whatever lets more people use it can let
+    /// more share, so a check for "more sharing" must ask this, not
+    /// compare the sharing settings alone.
+    pub fn may_share(self, access: SoulseekAccess, sharing: SoulseekAccess, role: Role) -> bool {
+        self.may_use(access, role) && self.sharing.decide(sharing, role)
+    }
 }
 
 /// The rules in force, shared between the settings (which change them)
@@ -140,6 +148,10 @@ struct Inner {
     access: AtomicU8,
     sharing: AtomicU8,
     members: Mutex<BTreeMap<UserId, MemberRules>>,
+    /// The rank a captain last gave each member since startup. A rank is
+    /// otherwise known from the request that started a session, which
+    /// can be outdated by the time a slow sign-in finishes.
+    ranks: Mutex<HashMap<UserId, Role>>,
 }
 
 impl SoulseekRules {
@@ -152,6 +164,7 @@ impl SoulseekRules {
             access: AtomicU8::new(access.to_u8()),
             sharing: AtomicU8::new(sharing.to_u8()),
             members: Mutex::new(members),
+            ranks: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -170,15 +183,36 @@ impl SoulseekRules {
             .unwrap_or_default()
     }
 
+    /// A captain gave `user` the rank `role`: it wins over the rank any of
+    /// their sessions started with (see [`Self::rank`]).
+    pub fn set_rank(&self, user: UserId, role: Role) {
+        crate::jobs::lock(&self.0.ranks).insert(user, role);
+    }
+
+    pub fn forget_rank(&self, user: UserId) {
+        crate::jobs::lock(&self.0.ranks).remove(&user);
+    }
+
+    /// `user`'s rank: the one a captain last gave them, else `started_as`
+    /// (the rank known when their session started, current unless changed
+    /// since, and then recorded here).
+    pub fn rank(&self, user: UserId, started_as: Role) -> Role {
+        crate::jobs::lock(&self.0.ranks)
+            .get(&user)
+            .copied()
+            .unwrap_or(started_as)
+    }
+
     /// Whether `user` (of `role`) may use Soulseek.
     pub fn may_use(&self, user: UserId, role: Role) -> bool {
-        self.member(user).soulseek.decide(self.access(), role)
+        self.member(user).may_use(self.access(), role)
     }
 
     /// Whether `user` may share their library (they still decide for
     /// themselves; nobody shares unless they turned it on).
     pub fn may_share(&self, user: UserId, role: Role) -> bool {
-        self.may_use(user, role) && self.member(user).sharing.decide(self.sharing(), role)
+        self.member(user)
+            .may_share(self.access(), self.sharing(), role)
     }
 
     pub fn set(
@@ -208,12 +242,6 @@ mod tests {
             assert_eq!(access.allows(Role::Pirate), pirate, "{access:?}");
             assert_eq!(SoulseekAccess::from_u8(access.to_u8()), access);
         }
-        use SoulseekAccess::*;
-        assert!(Off.is_widened_by(Captains));
-        assert!(Captains.is_widened_by(Everyone));
-        assert!(!Everyone.is_widened_by(Captains));
-        assert!(!Captains.is_widened_by(Off));
-        assert!(!Captains.is_widened_by(Captains));
     }
 
     const ANNE: UserId = UserId(1);
@@ -266,6 +294,13 @@ mod tests {
         assert!(rules.may_use(ANNE, Role::Captain));
         assert!(!rules.may_share(ANNE, Role::Captain));
         assert!(rules.may_share(JACK, Role::Pirate), "others unaffected");
+
+        // A rank a captain gave wins over the one a session started with.
+        assert_eq!(rules.rank(JACK, Role::Captain), Role::Captain);
+        rules.set_rank(JACK, Role::Pirate);
+        assert_eq!(rules.rank(JACK, Role::Captain), Role::Pirate);
+        rules.forget_rank(JACK);
+        assert_eq!(rules.rank(JACK, Role::Captain), Role::Captain);
 
         assert!(Blocked.is_widened_by(Auto));
         assert!(Auto.is_widened_by(Allowed));

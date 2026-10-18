@@ -301,14 +301,18 @@ impl Soulseek {
         }
     }
 
-    /// A captain changed `user`'s rank or overrides: end their session if
-    /// the rules no longer let them use Soulseek, else apply the sharing
-    /// rule to it.
+    /// A captain changed `user`'s rank: end their session if the rules no
+    /// longer let them use Soulseek, else apply the sharing rule to it.
+    ///
+    /// The rank is recorded first, and a sign-in still connecting reads it
+    /// when it registers its session (`sign_in_locked`): a session this
+    /// misses takes the new rank there, one it finds already has it.
     pub async fn member_changed(&self, user: UserId, role: Role) {
+        self.ctx.config.rules.set_rank(user, role);
         if !self.ctx.config.rules.may_use(user, role) {
             self.suspend(user).await;
         } else if let Some(session) = self.session(user).filter(|s| !s.is_stopped()) {
-            session.set_role(role).await;
+            session.apply_sharing().await;
         }
     }
 
@@ -428,7 +432,36 @@ impl Soulseek {
                 a.password = remember.then(|| password.to_owned());
             })
             .await;
-        crate::jobs::lock(&self.sessions).insert(user, Arc::clone(&session));
+        // The rules may have turned Soulseek off for this user while the
+        // sign-in was connecting, after the sweep that ended the other
+        // sessions (`suspend`) had passed. The sweep takes this lock after
+        // changing the rules, so checking them under it means either the
+        // sweep finds this session or this sees the new rules.
+        // The same goes for a rank a captain changed meanwhile, which wins
+        // over the one this sign-in began with (see `member_changed`).
+        let (admitted, rank_changed) = {
+            let mut sessions = crate::jobs::lock(&self.sessions);
+            let rank = self.ctx.config.rules.rank(user, role);
+            let admitted = self.ctx.config.rules.may_use(user, rank);
+            if admitted {
+                sessions.insert(user, Arc::clone(&session));
+            }
+            (admitted, rank != role)
+        };
+        if !admitted {
+            session.stop().await;
+            // As if suspended a moment later: a remembered account comes
+            // back once Soulseek is on again for them.
+            if remember {
+                crate::jobs::lock(&self.suspended).insert(user);
+            }
+            tracing::info!(%user, soulseek_user = %username, "Soulseek sign-in ended by the server rules");
+            return Err(SoulseekError::Disabled);
+        }
+        if rank_changed {
+            // It started out sharing (or not) by the old rank.
+            session.apply_sharing().await;
+        }
         Ok(session.status().await)
     }
 
@@ -449,6 +482,7 @@ impl Soulseek {
             session.stop().await;
         }
         crate::jobs::lock(&self.suspended).remove(&user);
+        self.ctx.config.rules.forget_rank(user);
         self.ctx.store.remove(user).await;
     }
 

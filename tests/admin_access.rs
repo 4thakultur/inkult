@@ -980,6 +980,7 @@ async fn soulseek_rules_reach_the_crew() {
     // More captains, for confirmations in the same 30 s as the first's.
     let (bonny, bonny_password, bonny_secret) = server.extra_captain(&captain, "bonny").await;
     let (read, read_password, read_secret) = server.extra_captain(&captain, "read").await;
+    let (kidd, kidd_password, kidd_secret) = server.extra_captain(&captain, "kidd").await;
     let settings = |captain: String| {
         let server = &server;
         async move {
@@ -1179,8 +1180,30 @@ async fn soulseek_rules_reach_the_crew() {
     assert_eq!(slsk_state(jack.clone()).await["state"], "disabled");
     assert_eq!(crew_row("jack").await["soulseek_allowed"], false);
 
+    // Turning Soulseek back on would let jack share again (he may, and
+    // the sharing switch covers him): that is more sharing, so it asks
+    // for the password and a code like the sharing switch itself.
+    let refused = patch(json!({ "soulseek": "all" })).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert_eq!(slsk_state(jack.clone()).await["state"], "disabled");
+    let on = server
+        .call(
+            Method::PATCH,
+            "/api/admin/settings",
+            Some(&kidd),
+            Some(json!({
+                "soulseek": "all",
+                "password": kidd_password,
+                "code": next_totp(&kidd_secret),
+            })),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert_eq!(slsk_state(jack.clone()).await["sharing_allowed"], true);
+
     // Blocking narrows: no confirmation needed. Back to AUTO for both.
-    patch(json!({ "soulseek": "all" })).await;
+    let auto = member(json!({ "soulseek_sharing": "auto" }), captain.clone()).await;
+    assert!(auto.status.is_success(), "{}", auto.text);
     let blocked = member(json!({ "soulseek": "blocked" }), captain.clone()).await;
     assert!(blocked.status.is_success(), "{}", blocked.text);
     assert_eq!(slsk_state(jack.clone()).await["state"], "disabled");
@@ -1200,4 +1223,33 @@ async fn soulseek_rules_reach_the_crew() {
     assert!(deleted.status.is_success(), "{}", deleted.text);
     let now = settings(captain.clone()).await;
     assert!(now.get("soulseek_members").is_none(), "{now}");
+
+    // Deleting a blocked member drops a block, which is not "letting them
+    // in": it needs no confirmation, and the deletion is never left half
+    // done (their sessions, Soulseek included, still running).
+    let mary_id = crew_row("mary").await["id"].clone();
+    let block = server
+        .call(
+            Method::PATCH,
+            &format!("/api/users/{mary_id}"),
+            Some(&captain),
+            Some(json!({ "soulseek": "blocked", "soulseek_sharing": "blocked" })),
+        )
+        .await;
+    assert!(block.status.is_success(), "{}", block.text);
+    let deleted = server
+        .call(
+            Method::DELETE,
+            &format!("/api/users/{mary_id}"),
+            Some(&captain),
+            None,
+        )
+        .await;
+    assert!(deleted.status.is_success(), "{}", deleted.text);
+    let now = settings(captain.clone()).await;
+    assert!(now.get("soulseek_members").is_none(), "{now}");
+    let gone = server
+        .call(Method::GET, "/api/soulseek", Some(&mary), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::UNAUTHORIZED, "{}", gone.text);
 }

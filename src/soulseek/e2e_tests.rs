@@ -1189,3 +1189,134 @@ async fn remembered_account_reconnects_only_when_its_user_logs_in() {
     assert!(Arc::ptr_eq(&session, &h.soulseek.session(ME).unwrap()));
     h.soulseek.shutdown().await;
 }
+
+/// A service whose Soulseek server holds the login answer until released,
+/// so a test can change the rules while a sign-in is still connecting.
+/// Starts with Soulseek and sharing on for everyone.
+async fn held_sign_in() -> (
+    Arc<Soulseek>,
+    SoulseekRules,
+    tokio::sync::oneshot::Sender<()>,
+    tempfile::TempDir,
+) {
+    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr().unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let (seen, _seen) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let (stream, _) = server.accept().await.unwrap();
+        let _ = released.await;
+        fake_server_client(stream, 1, seen).await;
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let library = Arc::new(
+        Library::open(dir.path().join("music"), dir.path().join("library.json"))
+            .await
+            .unwrap(),
+    );
+    let rules = SoulseekRules::new(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Everyone,
+        Default::default(),
+    );
+    let soulseek = Arc::new(
+        Soulseek::new(
+            SoulseekConfig {
+                server: addr.to_string(),
+                ports: vec![free_port()],
+                upload_slots: 1,
+                rules: rules.clone(),
+                max_track_length: TrackLengthLimit::new(MaxTrackLength::DEFAULT),
+                staging_dir: dir.path().join("staging"),
+                store_path: dir.path().join("soulseek.json"),
+                allow_loopback: true,
+            },
+            library,
+            Arc::new(crate::tools::ffmpeg::Ffmpeg::new("ffmpeg")),
+        )
+        .await
+        .unwrap(),
+    );
+
+    (soulseek, rules, release, dir)
+}
+
+/// A captain turning Soulseek off while a sign-in is still connecting:
+/// the session must not come up afterwards, out of reach of the sweep
+/// that ended everyone else's.
+#[tokio::test]
+async fn sign_in_racing_soulseek_turned_off_stays_out() {
+    let (soulseek, rules, release, _dir) = held_sign_in().await;
+    let signing_in = {
+        let soulseek = Arc::clone(&soulseek);
+        tokio::spawn(async move {
+            soulseek
+                .sign_in(ME, Role::Pirate, "digger", "secret", true)
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // What `App::commit_settings` does: new rules, then the sweep.
+    rules.set(
+        SoulseekAccess::Off,
+        SoulseekAccess::Everyone,
+        Default::default(),
+    );
+    soulseek.suspend(ME).await;
+    release.send(()).unwrap();
+
+    let result = signing_in.await.unwrap();
+    assert!(
+        matches!(result, Err(SoulseekError::Disabled)),
+        "sign-in finished as {result:?}"
+    );
+    assert!(soulseek.session(ME).is_none(), "a session outlived Off");
+
+    // Remembered, it comes back like any suspended session once allowed.
+    rules.set(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Everyone,
+        Default::default(),
+    );
+    assert!(soulseek.ctx.store.get(ME).await.unwrap().password.is_some());
+    soulseek.shutdown().await;
+}
+
+/// A captain demoting a member while their sign-in is still connecting:
+/// the new session must follow the new rank, not the one the sign-in
+/// started with, though nothing found it to tell it.
+#[tokio::test]
+async fn sign_in_racing_a_demotion_takes_the_new_rank() {
+    let (soulseek, rules, release, _dir) = held_sign_in().await;
+    rules.set(
+        SoulseekAccess::Everyone,
+        SoulseekAccess::Captains,
+        Default::default(),
+    );
+    let signing_in = {
+        let soulseek = Arc::clone(&soulseek);
+        tokio::spawn(async move {
+            soulseek
+                .sign_in(ME, Role::Captain, "digger", "secret", true)
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // What `App::update_user` does after saving the new rank.
+    soulseek.member_changed(ME, Role::Pirate).await;
+    release.send(()).unwrap();
+
+    let status = signing_in.await.unwrap().unwrap();
+    assert!(!status.sharing_allowed, "a demoted captain may still share");
+    let session = soulseek.session(ME).unwrap();
+    session.set_sharing(false).await.unwrap();
+    assert!(matches!(
+        session.set_sharing(true).await,
+        Err(SoulseekError::SharingDisabled)
+    ));
+
+    // And promoted again, it follows that too.
+    soulseek.member_changed(ME, Role::Captain).await;
+    assert!(session.status().await.sharing_allowed);
+    soulseek.shutdown().await;
+}

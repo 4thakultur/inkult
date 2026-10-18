@@ -489,8 +489,11 @@ every member's choice, so it stays the way to stop Soulseek or sharing for
 everyone at once. The row shows what the switch and the choice add up to.
 Choices are kept in `settings.json` and forgotten when the account is deleted.
 
-Relaxing the two-factor rule or allowing more Soulseek sharing (by switch or
-for a single member) asks for the captain's password and a code, so a
+Relaxing the two-factor rule or allowing more Soulseek sharing asks for the
+captain's password and a code. More sharing means anything that lets someone
+share who could not: the sharing switch or a member's sharing choice, but also
+opening the Soulseek switch, or unblocking a member, when the sharing rule
+already covers them. This is so a
 hijacked captain session cannot quietly switch 2FA off, or start uploading
 from the server's connection: every Soulseek transfer leaves from the
 machine Inkult runs on, so what is shared is the host's call. An unreadable
