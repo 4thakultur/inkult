@@ -1995,7 +1995,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   --w95-v-soulseek: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M8 16v10h16v-6' fill='none' stroke='%23000'/%3E%3Crect x='1.5' y='3.5' width='14' height='11' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='3.5' y='5.5' width='10' height='7' fill='%23008080'/%3E%3Crect x='5.5' y='14.5' width='6' height='2' fill='%23808080' stroke='%23000'/%3E%3Crect x='16.5' y='9.5' width='14' height='11' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='18.5' y='11.5' width='10' height='7' fill='%23000080'/%3E%3Crect x='20.5' y='20.5' width='6' height='2' fill='%23808080' stroke='%23000'/%3E%3C/svg%3E");
   --w95-v-downloads: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 8.5h10l2 3h17v17h-29z' fill='%23ffff80' stroke='%23808000'/%3E%3Cpath d='M2.5 12.5h27' stroke='%23fff'/%3E%3Cpath d='M13.5 13.5h5v7h4l-6.5 7-6.5-7h4z' fill='%2300a000' stroke='%23000'/%3E%3C/svg%3E");
   --w95-v-library: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Cpath d='M1.5 8.5h10l2 3h17v17h-29z' fill='%23ffff80' stroke='%23808000'/%3E%3Cpath d='M2.5 12.5h27' stroke='%23fff'/%3E%3Cpath d='M14 16h8v2h-6v7' fill='none' stroke='%23000' stroke-width='2'/%3E%3Cpath d='M20 18v5' stroke='%23000' stroke-width='2'/%3E%3Crect x='11' y='23' width='4' height='3' fill='%23000'/%3E%3Crect x='17' y='21' width='4' height='3' fill='%23000'/%3E%3C/svg%3E");
-  --w95-v-messages: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Crect x='2.5' y='7.5' width='27' height='18' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M3 8l13 10 13-10' fill='none' stroke='%23000' shape-rendering='auto'/%3E%3Cpath d='M3 25l10-8M29 25l-10-8' stroke='%23808080' shape-rendering='auto'/%3E%3Crect x='23' y='3' width='7' height='7' fill='%23ff0000' stroke='%23800000'/%3E%3C/svg%3E");
+  --w95-v-messages: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Crect x='2.5' y='7.5' width='27' height='18' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M3 8l13 10 13-10' fill='none' stroke='%23000' shape-rendering='auto'/%3E%3Cpath d='M3 25l10-8M29 25l-10-8' stroke='%23808080' shape-rendering='auto'/%3E%3C/svg%3E");
   --w95-v-settings: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32' shape-rendering='crispEdges'%3E%3Crect x='3.5' y='3.5' width='25' height='18' fill='%23c0c0c0' stroke='%23000'/%3E%3Crect x='6.5' y='6.5' width='19' height='12' fill='%23008080' stroke='%23808080'/%3E%3Cpath d='M9 10h8M9 13h12M9 16h6' stroke='%23fff'/%3E%3Crect x='11.5' y='21.5' width='9' height='3' fill='%23808080' stroke='%23000'/%3E%3Crect x='6.5' y='24.5' width='19' height='4' fill='%23c0c0c0' stroke='%23000'/%3E%3C/svg%3E");
   --w95-v-admin: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='10' cy='16' r='6.5' fill='%23ffd700' stroke='%23000'/%3E%3Ccircle cx='8.5' cy='16' r='2' fill='%23008080' stroke='%23000'/%3E%3Cpath d='M16 14.5h14v3h-3v4h-3v-4h-2v3h-3v-3h-3z' fill='%23ffd700' stroke='%23000' stroke-linejoin='round'/%3E%3C/svg%3E");
   --w95-radio: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' shape-rendering='crispEdges'%3E%3Cpath fill='%23808080' d='M4 0h4v1h-4zM2 1h2v1h-2zM8 1h2v1h-2zM1 2h1v1h-1zM1 3h1v1h-1zM0 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM0 7h1v1h-1zM1 8h1v1h-1zM1 9h1v1h-1z'/%3E%3Cpath fill='%23000' d='M4 1h4v1h-4zM2 2h2v1h-2zM8 2h2v1h-2zM2 3h1v1h-1zM1 4h1v1h-1zM1 5h1v1h-1zM1 6h1v1h-1zM1 7h1v1h-1zM2 8h1v1h-1z'/%3E%3Cpath fill='%23fff' d='M4 2h4v1h-4zM10 2h1v1h-1zM3 3h6v1h-6zM10 3h1v1h-1zM2 4h8v1h-8zM11 4h1v1h-1zM2 5h8v1h-8zM11 5h1v1h-1zM2 6h8v1h-8zM11 6h1v1h-1zM2 7h8v1h-8zM11 7h1v1h-1zM3 8h6v1h-6zM10 8h1v1h-1zM4 9h4v1h-4zM10 9h1v1h-1zM2 10h2v1h-2zM8 10h2v1h-2zM4 11h4v1h-4z'/%3E%3Cpath fill='%23dfdfdf' d='M9 3h1v1h-1zM10 4h1v1h-1zM10 5h1v1h-1zM10 6h1v1h-1zM10 7h1v1h-1zM9 8h1v1h-1zM2 9h2v1h-2zM8 9h2v1h-2zM4 10h4v1h-4z'/%3E%3C/svg%3E");
@@ -2090,6 +2090,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
 :root[data-theme="win95"] .nav-item:hover { color: #000; }
 :root[data-theme="win95"] .nav-item .key { display: none; }
 :root[data-theme="win95"] .nav-item.active { background: none; color: #000; box-shadow: var(--w95-status); }
+:root[data-theme="win95"] .nav-item:not(.active) .badge, :root[data-theme="win95"] .badge { color: var(--w95-title); }
 /* Wide screens: the menu bar is a toolbar of big buttons, each view's icon
    over its name, flat until pointed at (raised) or open (pressed in). */
 @media (min-width: 641px) and (min-height: 561px) {
@@ -2101,8 +2102,17 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   :root[data-theme="win95"] .nav-item::before { content: ""; width: 32px; height: 32px; background: var(--view-ico) no-repeat center / 32px 32px; }
   :root[data-theme="win95"] .nav-item:hover:not(.active) { box-shadow: var(--w95-thin-raised); }
   :root[data-theme="win95"] .nav-item.active { box-shadow: var(--w95-pressed); background: repeating-conic-gradient(#c0c0c0 0 25%, #fff 0 50%) 0 0 / 2px 2px; }
+  /* On the icon's corner, not a "(1)" line under the name. */
+  :root[data-theme="win95"] .nav-item { position: relative; }
+  :root[data-theme="win95"] .menubar .nav-item .badge { position: absolute; top: 1px; left: calc(50% + 7px); margin: 0; }
 }
-:root[data-theme="win95"] .nav-item:not(.active) .badge, :root[data-theme="win95"] .badge { color: var(--w95-title); }
+/* A menu entry's count is a red bubble rather than "(1)". */
+:root[data-theme="win95"] .menubar .nav-item .badge {
+  min-width: 17px; height: 17px; padding: 0 4px; box-sizing: border-box; border-radius: 9px;
+  background: #ff0000; color: #fff; border: 1px solid #800000; box-shadow: 0 0 0 1px #fff;
+  font-size: 11px; font-weight: bold; line-height: 15px; text-align: center; pointer-events: none;
+}
+:root[data-theme="win95"] .menubar .nav-item .badge::before, :root[data-theme="win95"] .menubar .nav-item .badge::after { content: none; }
 
 :root[data-theme="win95"] .banner {
   border: 0; box-shadow: var(--w95-window); background: var(--w95-face); color: #000; padding: 10px 12px;
