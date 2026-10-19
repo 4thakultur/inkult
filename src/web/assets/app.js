@@ -591,7 +591,7 @@ const FX_CURSORS = new Set(["blazing"]);
 const FINE_POINTER = "(hover: hover) and (pointer: fine)";
 /** Screens up to this size (longest side, CSS px) are never wider than the content: no starfield. */
 const STARS_MIN_SCREEN = 1200;
-const cursorFx = { x: 0, y: 0, target: null, frame: 0 };
+const cursorFx = { x: 0, y: 0, target: null, frame: 0, barDrag: false };
 
 function syncCursorFx() {
   const on = matchMedia(FINE_POINTER).matches && FX_CURSORS.has(currentCursor());
@@ -607,7 +607,9 @@ function drawCursorFx() {
   cursorFx.frame = 0;
   const el = $("#cursor-fx");
   let fxState = null;
-  if (cursorFx.target instanceof Element && document.documentElement.hasAttribute("data-cursor-fx")) {
+  document.documentElement.toggleAttribute("data-bar-drag", cursorFx.barDrag);
+  if (cursorFx.target instanceof Element && !cursorFx.barDrag
+    && document.documentElement.hasAttribute("data-cursor-fx")) {
     const cursor = getComputedStyle(cursorFx.target).cursor;
     if (cursor === "none") fxState = "idle";
     else if (cursor.includes("fx-hot")) fxState = "hot";
@@ -618,14 +620,51 @@ function drawCursorFx() {
   el.style.transform = `translate(${cursorFx.x}px, ${cursorFx.y}px)`;
 }
 
+/**
+ * Whether the pointer is on a native scrollbar (dialogs, menus, and any
+ * screen without drawn bars; see setupScrollbars). Hovering one is fine: pointer events still
+ * arrive and the overlay follows. But while one is dragged no pointer
+ * events reach the page, so the overlay would sit frozen where the button
+ * went down. From that press until the button is released (or the next
+ * move after it), the overlay hides and the system arrow is shown instead
+ * (<html data-bar-drag>, see app.css). Drawn bars (.sb-on) hide the native
+ * ones, so their gutter is inside clientWidth and never matches.
+ */
+function onNativeScrollbar(event) {
+  const el = event.target;
+  if (!(el instanceof Element) || !document.documentElement.hasAttribute("data-cursor-fx")) return false;
+  if (el === document.documentElement || el === document.body) {
+    // The page's bars sit past the root's client box, at the window edge.
+    const root = document.documentElement;
+    return event.clientX >= root.clientWidth || event.clientY >= root.clientHeight;
+  }
+  // Inline boxes have no client box and never scroll.
+  if (!el.clientWidth && !el.clientHeight) return false;
+  // A bar is the strip between the client box and the border.
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  const clientRight = rect.left + el.clientLeft + el.clientWidth;
+  const clientBottom = rect.top + el.clientTop + el.clientHeight;
+  const innerRight = rect.right - parseFloat(style.borderRightWidth);
+  const innerBottom = rect.bottom - parseFloat(style.borderBottomWidth);
+  return (event.clientX >= clientRight && event.clientX < innerRight && event.clientY < clientBottom)
+    || (event.clientY >= clientBottom && event.clientY < innerBottom);
+}
+
+function trackCursorFx(event) {
+  if (event.pointerType !== "mouse") return;
+  cursorFx.x = event.clientX;
+  cursorFx.y = event.clientY;
+  cursorFx.target = event.target;
+  // A move means no bar is being dragged (none arrive during a drag).
+  cursorFx.barDrag = event.type === "pointerdown" && onNativeScrollbar(event);
+  scheduleCursorFx();
+}
+
 function setupCursorFx() {
-  document.addEventListener("pointermove", (event) => {
-    if (event.pointerType !== "mouse") return;
-    cursorFx.x = event.clientX;
-    cursorFx.y = event.clientY;
-    cursorFx.target = event.target;
-    scheduleCursorFx();
-  }, { passive: true });
+  document.addEventListener("pointermove", trackCursorFx, { passive: true });
+  document.addEventListener("pointerdown", trackCursorFx, { passive: true, capture: true });
+  document.addEventListener("pointerup", trackCursorFx, { passive: true, capture: true });
   // Leaving the window: hide rather than freeze at the edge.
   document.addEventListener("mouseout", (event) => {
     if (event.relatedTarget) return;
@@ -645,15 +684,23 @@ function setupCursorFx() {
 // as a background in a padding gutter (.sb-on in app.css); the page gets
 // the fixed #page-scrollbar. Scrollers in dialogs and menus keep native
 // bars, since modals fall back to the system cursors anyway.
+// The theme sets the bar's width and arrow buttons (--sb-w, --sb-btn on
+// :root: Windows 95 has 16px bars with a button at each end); a scroller
+// drawn inside a sunken frame keeps the bar inside it (--sb-inset).
 const SCROLLERS = ".irc-log, .slsk-log, .slsk-desc, .irc-rooms, .irc-users, .drawer, .irc-side";
-const SB_WIDTH = 10;
 const SB_MIN_THUMB = 24;
+// An arrow button scrolls by about a line, as native ones do.
+const SB_LINE = 40;
 // Native bars page by a bit less than a screen when the track is clicked,
 // first after a pause, then repeating while the button is held.
 const SB_PAGE = 0.875;
 const SB_REPEAT_DELAY = 300;
 const SB_REPEAT_EVERY = 50;
-const sb = { frame: 0, drag: null, page: null, hot: null };
+const sb = { frame: 0, drag: null, page: null, arrow: null, hot: null, width: 10, button: 0 };
+
+function cssPx(el, name) {
+  return parseFloat(getComputedStyle(el).getPropertyValue(name)) || 0;
+}
 
 function scheduleScrollbars() {
   if (!sb.frame) sb.frame = requestAnimationFrame(refreshScrollbars);
@@ -668,13 +715,18 @@ function sbScroller(owner) {
  *  is nothing to scroll. */
 function sbGeometry(owner) {
   const el = sbScroller(owner);
-  const top = owner === "page" ? 0 : el.getBoundingClientRect().top + el.clientTop;
-  const track = el.clientHeight;
+  const page = owner === "page";
+  const inset = page ? 0 : cssPx(el, "--sb-inset");
+  const box = page ? null : el.getBoundingClientRect();
+  // The track runs between the arrow buttons.
+  const top = (page ? 0 : box.top + el.clientTop) + inset + sb.button;
+  const track = el.clientHeight - 2 * (inset + sb.button);
+  const right = page ? window.innerWidth : box.left + el.clientLeft + el.clientWidth - inset;
   const range = el.scrollHeight - el.clientHeight;
   if (range < 1 || track <= 0) return null;
   const height = Math.min(track, Math.max(SB_MIN_THUMB, track * el.clientHeight / el.scrollHeight));
   const y = (track - height) * Math.min(1, Math.max(0, el.scrollTop / range));
-  return { top, track, range, height, y };
+  return { top, track, right, range, height, y };
 }
 
 function setStyleVar(el, name, value) {
@@ -688,6 +740,8 @@ function paintScrollbar(el, geometry, owner) {
   }
   el.classList.toggle("sb-hot", sb.hot === owner);
   el.classList.toggle("sb-drag", sb.drag?.owner === owner);
+  el.classList.toggle("sb-up-pressed", sb.arrow?.owner === owner && sb.arrow.direction < 0);
+  el.classList.toggle("sb-down-pressed", sb.arrow?.owner === owner && sb.arrow.direction > 0);
 }
 
 function refreshScrollbars() {
@@ -707,24 +761,23 @@ function refreshScrollbars() {
 }
 
 /** The drawn bar under the pointer, if any: its owner (a scroller or
- *  "page"), geometry and the pointer's offset along the track. */
+ *  "page"), geometry, the pointer's offset along the track, and which
+ *  arrow button it is on (-1 up, 1 down, 0 none). */
 function scrollbarAt(event) {
   const target = event.target;
   if (!(target instanceof Element)) return null;
   let owner = null;
-  if (target.closest("#page-scrollbar")) {
-    owner = "page";
-  } else if (target.classList.contains("sb-on")) {
-    // The gutter is the scroller's own padding, so the scroller itself is
-    // the target there, never one of its children.
-    const rect = target.getBoundingClientRect();
-    const right = rect.left + target.clientLeft + target.clientWidth;
-    if (event.clientX >= right - SB_WIDTH && event.clientX < right) owner = target;
-  }
+  if (target.closest("#page-scrollbar")) owner = "page";
+  // The gutter is the scroller's own padding, so the scroller itself is
+  // the target there, never one of its children.
+  else if (target.classList.contains("sb-on")) owner = target;
   const geometry = owner && sbGeometry(owner);
   if (!geometry) return null;
+  if (event.clientX < geometry.right - sb.width || event.clientX >= geometry.right) return null;
   const at = event.clientY - geometry.top;
-  return { owner, geometry, at, onThumb: at >= geometry.y && at < geometry.y + geometry.height };
+  if (at < -sb.button || at >= geometry.track + sb.button) return null;
+  const arrow = at < 0 ? -1 : at >= geometry.track ? 1 : 0;
+  return { owner, geometry, at, arrow, onThumb: !arrow && at >= geometry.y && at < geometry.y + geometry.height };
 }
 
 function scrollOwnerTo(owner, top) {
@@ -745,6 +798,25 @@ function pageTowardsPointer() {
   return true;
 }
 
+function stopArrow() {
+  if (sb.arrow) clearTimeout(sb.arrow.timer);
+  sb.arrow = null;
+}
+
+function scrollByLine() {
+  const { owner, direction } = sb.arrow;
+  const el = sbScroller(owner);
+  scrollOwnerTo(owner, el.scrollTop + direction * SB_LINE);
+}
+
+function repeatArrow() {
+  if (!sb.arrow) return;
+  sb.arrow.timer = setTimeout(() => {
+    scrollByLine();
+    repeatArrow();
+  }, SB_REPEAT_EVERY);
+}
+
 function stopPaging() {
   if (sb.page) clearTimeout(sb.page.timer);
   sb.page = null;
@@ -760,10 +832,11 @@ function repeatPaging() {
 
 function setupScrollbars() {
   const fine = matchMedia(FINE_POINTER);
-  // Windows 95 has real scrollbars with arrow buttons, which app.css draws
-  // on the native ones, so the drawn bars stay off there.
   const sync = () => {
-    document.documentElement.toggleAttribute("data-scrollbars", fine.matches && !w95Active());
+    const root = document.documentElement;
+    root.toggleAttribute("data-scrollbars", fine.matches);
+    sb.width = cssPx(root, "--sb-w") || 10;
+    sb.button = cssPx(root, "--sb-btn");
     scheduleScrollbars();
   };
   fine.addEventListener("change", sync);
@@ -776,7 +849,12 @@ function setupScrollbars() {
     // No focus change or text selection, as with a native bar.
     event.preventDefault();
     event.target.setPointerCapture(event.pointerId);
-    if (hit.onThumb) {
+    if (hit.arrow) {
+      stopArrow();
+      sb.arrow = { owner: hit.owner, pointerId: event.pointerId, direction: hit.arrow, timer: 0 };
+      scrollByLine();
+      sb.arrow.timer = setTimeout(repeatArrow, SB_REPEAT_DELAY);
+    } else if (hit.onThumb) {
       const el = sbScroller(hit.owner);
       sb.drag = {
         owner: hit.owner, pointerId: event.pointerId, startY: event.clientY, startTop: el.scrollTop,
@@ -812,6 +890,10 @@ function setupScrollbars() {
 
   const release = (event) => {
     if (sb.page?.pointerId === event.pointerId) stopPaging();
+    if (sb.arrow?.pointerId === event.pointerId) {
+      stopArrow();
+      scheduleScrollbars();
+    }
     if (sb.drag?.pointerId !== event.pointerId) return;
     sb.drag = null;
     scheduleScrollbars();
