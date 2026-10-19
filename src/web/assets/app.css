@@ -442,6 +442,9 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
 .chip.active { color: var(--bright); }
 .chip.active::before { content: "(*) "; }
 .chip:hover { color: var(--bright); }
+/* A setting the current theme or device leaves out. */
+.chip:disabled, .chip:disabled:hover { color: var(--dim); cursor: var(--cursor-idle); }
+.setting.unavailable .setting-label { color: var(--dim); }
 
 #view-search > .chips { max-width: 860px; }
 .filters-toggle { margin-left: auto; color: var(--mid); }
@@ -1532,6 +1535,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   }
   .appbar-title { flex: 1; min-width: 0; color: var(--bright); letter-spacing: .18em; }
   .appbar-brand { display: flex; flex: none; }
+  .appbar-clock { display: none; }
 
   /* Slide-in panels: the menu from the left, chat rooms from the right. */
   .drawer, body.chat-mode .irc-side {
@@ -2177,6 +2181,10 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
 :root[data-theme="win95"] .chip::before { content: ""; flex: none; width: 12px; height: 12px; background: var(--w95-radio) no-repeat; }
 :root[data-theme="win95"] .chip.active::before { content: ""; background-image: var(--w95-radio-on); }
 :root[data-theme="win95"] .chip:hover, :root[data-theme="win95"] .chip.active { color: #000; }
+/* Disabled: grey embossed text and grey radio buttons. */
+:root[data-theme="win95"] .chip:disabled, :root[data-theme="win95"] .setting.unavailable .setting-label { color: #808080; text-shadow: 1px 1px #fff; }
+:root[data-theme="win95"] .chip:disabled::before { background-image: var(--w95-radio-off-grey); }
+:root[data-theme="win95"] .chip.active:disabled::before { background: radial-gradient(circle at 6px 6px, #808080 1.5px, transparent 2px), var(--w95-radio-off-grey); }
 :root[data-theme="win95"] .filters-toggle, :root[data-theme="win95"] .filters-toggle.on, :root[data-theme="win95"] .reposts-toggle.on { color: #000; }
 :root[data-theme="win95"] .check { gap: 5px; color: #000; align-items: center; }
 :root[data-theme="win95"] .check input {
@@ -2483,17 +2491,30 @@ html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment:act
   :root[data-theme="win95"] .main { padding: 0; box-shadow: none; background: none; }
   :root[data-theme="win95"] .main > .view { padding: 0; }
   :root[data-theme="win95"] .tagline { color: #808080; }
+  /* The top bar is the taskbar, docked at the top: Start, the open view
+     as its pressed-in task button, and the tray at the far end. */
   :root[data-theme="win95"] .appbar {
-    background: var(--w95-title); color: #fff; border-bottom: 0;
+    gap: 4px; padding-top: calc(4px + var(--safe-t)); padding-bottom: 5px;
+    background: var(--w95-face); color: #000; border-bottom: 0;
+    box-shadow: inset 0 1px #dfdfdf, inset 0 2px #fff, inset 0 -1px #000, inset 0 -2px #808080;
     -webkit-backdrop-filter: none; backdrop-filter: none;
   }
-  :root[data-theme="win95"] .appbar-title { color: #fff; font-weight: bold; }
+  :root[data-theme="win95"] .appbar-title {
+    flex: 0 1 180px; display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 8px;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    color: #000; font-weight: bold; box-shadow: var(--w95-pressed);
+    background: repeating-conic-gradient(#c0c0c0 0 25%, #fff 0 50%) 0 0 / 2px 2px;
+  }
+  :root[data-theme="win95"] .appbar-title::before {
+    content: ""; flex: none; width: 20px; height: 20px; background: var(--view-ico) no-repeat center / 20px 20px;
+  }
+  :root[data-theme="win95"] .appbar .appbar-rooms, :root[data-theme="win95"] .appbar-brand { margin-left: auto; }
   :root[data-theme="win95"] .appbar-menu {
     background: var(--w95-face); color: #000; box-shadow: var(--w95-raised); font-size: 1.4em;
     min-width: 40px; min-height: 36px;
   }
   :root[data-theme="win95"] .appbar-menu:active { background: var(--w95-face); color: #000; box-shadow: var(--w95-pressed); }
-  :root[data-theme="win95"] .appbar .kult, :root[data-theme="win95"] .appbar .kult.playing { color: #fff; }
+  :root[data-theme="win95"] .appbar .kult, :root[data-theme="win95"] .appbar .kult.playing { color: #000; }
   :root[data-theme="win95"] .appbar .appbar-rooms { min-width: 0; }
   :root[data-theme="win95"] .scrim { background: transparent; }
   :root[data-theme="win95"] .drawer, :root[data-theme="win95"] body.chat-mode .irc-side {
@@ -2523,7 +2544,25 @@ html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment:act
   :root[data-theme="win95"] .dialog > form { padding: 0 calc(9px + var(--safe-r)) 0 calc(9px + var(--safe-l)); }
   :root[data-theme="win95"] .dialog-actions .btn { border: 0; }
   :root[data-theme="win95"] .player:not(.folded) { padding-top: 12px; }
-  :root[data-theme="win95"] .slsk-tabs { margin-inline: 0; padding-inline: 2px; }
+  /* Tabs that don't fit take a second row, as property sheets did,
+     rather than running off the frame. */
+  :root[data-theme="win95"] .slsk-tabs { margin-inline: 0; padding-inline: 2px; flex-wrap: wrap; overflow: visible; row-gap: 0; }
+  /* The Soulseek filters sit inside the tab's frame, so they wrap there as
+     radio groups do, instead of the edge-to-edge swipeable rows. */
+  :root[data-theme="win95"] .slsk-filters .chips { flex-wrap: wrap; overflow: visible; margin-inline: 0; padding-inline: 0; gap: 4px 14px; }
+  /* So do the library's scope and sort rows. */
+  :root[data-theme="win95"] :is(#library-scope, #library-sort) { flex-wrap: wrap; overflow: visible; margin-inline: 0; padding-inline: 0; gap: 4px 14px; }
+  /* Wrapped radio lines sit close, as in a dialog; 36px still taps easily. */
+  :root[data-theme="win95"] :is(#library-scope, #library-sort, .slsk-filters .chips) > .chip { min-height: 36px; }
+  :root[data-theme="win95"] :is(#library-scope, #library-sort, .slsk-filters .chips) { row-gap: 0; }
+  /* Bulk bar: the select-all box, the count and Clear on one line, then the
+     four actions as equal buttons filling the next. */
+  :root[data-theme="win95"] .lib-bulk { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px 8px; }
+  :root[data-theme="win95"] .lib-bulk .bulk-count { min-width: 0; }
+  :root[data-theme="win95"] .lib-bulk .bulk-clear .btn { min-width: 72px; }
+  :root[data-theme="win95"] .lib-bulk .bulk-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  :root[data-theme="win95"] .lib-bulk .bulk-actions .btn { min-width: 0; padding-inline: 4px; }
+  :root[data-theme="win95"] .lib-bulk:not(.active) .bulk-actions { display: none; }
 }
 
 /* Wide screens: the main window reaches down to the taskbar, and the list
@@ -2536,6 +2575,9 @@ html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment:act
   :root[data-theme="win95"] :is(#search-results, #jobs, #library) { flex: 1 0 auto; display: flex; flex-direction: column; }
   :root[data-theme="win95"] #library > .lib-list { flex: 1 0 auto; align-content: start; }
   :root[data-theme="win95"] :is(#search-results, #jobs) > .empty { flex: 1 0 auto; }
+  /* Except the chat, which fits the viewport (see .chat-mode): there the
+     window must not grow with the log, or the log never scrolls. */
+  :root[data-theme="win95"] body.chat-mode .main { flex: 1 1 auto; min-height: 0; }
 }
 /* The transfer queue is a white list panel too. */
 :root[data-theme="win95"] #jobs { background: #fff; box-shadow: var(--w95-field); padding: 2px 8px; }
@@ -2557,13 +2599,13 @@ html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment:act
 :root[data-theme="win95"] .empty > p:not(.empty-title) { max-width: 80ch; }
 
 /* ----- Windows 95 icons ----- */
-:root[data-theme="win95"] .nav-item[data-view="search"] { --view-ico: var(--w95-v-search); }
-:root[data-theme="win95"] .nav-item[data-view="soulseek"] { --view-ico: var(--w95-v-soulseek); }
-:root[data-theme="win95"] .nav-item[data-view="downloads"] { --view-ico: var(--w95-v-downloads); }
-:root[data-theme="win95"] .nav-item[data-view="library"] { --view-ico: var(--w95-v-library); }
-:root[data-theme="win95"] .nav-item[data-view="messages"] { --view-ico: var(--w95-v-messages); }
-:root[data-theme="win95"] .nav-item[data-view="settings"] { --view-ico: var(--w95-v-settings); }
-:root[data-theme="win95"] .nav-item[data-view="admin"] { --view-ico: var(--w95-v-admin); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="search"] { --view-ico: var(--w95-v-search); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="soulseek"] { --view-ico: var(--w95-v-soulseek); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="downloads"] { --view-ico: var(--w95-v-downloads); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="library"] { --view-ico: var(--w95-v-library); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="messages"] { --view-ico: var(--w95-v-messages); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="settings"] { --view-ico: var(--w95-v-settings); }
+:root[data-theme="win95"] :is(.nav-item, .appbar-title)[data-view="admin"] { --view-ico: var(--w95-v-admin); }
 
 /* Which picture goes with which action, glyph or menu choice. */
 :root[data-theme="win95"] [data-icon="save"], :root[data-theme="win95"] [data-glyph="save"] { --ico: var(--w95-i-save); }
@@ -2640,6 +2682,62 @@ html[data-theme="win95"] ::-webkit-scrollbar-button:horizontal:end:increment:act
   :root[data-theme="win95"] .format-menu.sheet .menu-item[data-icon]::before {
     left: 8px; width: 28px; height: 28px; margin-top: -14px; background-size: 24px 24px;
   }
+
+  /* Clippy lives in the tray, the sunken panel at the end of the taskbar,
+     on the grey face his wire is drawn for. */
+  :root[data-theme="win95"] .appbar-brand {
+    align-items: center; justify-content: center; min-width: 40px; height: 36px; padding: 0 6px;
+    box-shadow: var(--w95-status);
+  }
+  :root[data-theme="win95"] .appbar .kult .clippy { width: 26px; height: 32px; }
+  /* With the clock, as one tray: Clippy draws its left half of the frame,
+     the clock the right. Not on the chat, where the rooms button sits. */
+  :root[data-theme="win95"] .appbar-clock {
+    display: inline-flex; align-items: center; height: 36px; margin-left: -4px; padding: 0 8px 0 2px;
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+    box-shadow: inset -1px -1px #fff, inset 0 1px #808080;
+  }
+  :root[data-theme="win95"] .appbar-brand:has(+ .appbar-clock) { padding-right: 2px; box-shadow: inset 1px 1px #808080, inset 0 -1px #fff; }
+  :root[data-theme="win95"] body.chat-mode .appbar-clock { display: none; }
+  /* Kult turned off: the tray is the clock alone, framed whole. */
+  :root[data-theme="win95"][data-kult="off"] .appbar-brand { display: none; }
+  :root[data-theme="win95"][data-kult="off"] .appbar-clock { margin-left: auto; padding-left: 8px; box-shadow: var(--w95-status); }
+  /* The unread dot sits in the Start button's corner, clear of its label. */
+  :root[data-theme="win95"] .appbar-menu .appbar-dot { top: 3px; right: 3px; width: 5px; height: 5px; box-shadow: none; }
+  :root[data-theme="win95"] .appbar .appbar-rooms { min-height: 36px; align-items: center; }
+
+  /* The Start menu, as Windows 95 drew it: the motto up the banner, big
+     icons, etched separators between groups of commands, the logo on a
+     screen-saver preview, and the account in a group box captioned with
+     the version, like System Properties. */
+  /* Raised clear of rounded screen corners (and the home indicator). */
+  :root[data-theme="win95"] .drawer::before { content: "4 tha kultur"; bottom: calc(26px + var(--safe-b)); }
+  :root[data-theme="win95"] .drawer .drawer-top { padding-bottom: 10px; border-bottom: 1px solid #808080; box-shadow: 0 1px #fff; }
+  :root[data-theme="win95"] .drawer .nav-item { min-height: 44px; }
+  :root[data-theme="win95"] .drawer .nav-item::before { width: 32px; height: 32px; background-size: 32px 32px; }
+  :root[data-theme="win95"] .drawer .nav-item:is([data-view="downloads"], [data-view="messages"], [data-view="settings"]) {
+    position: relative; margin-top: 9px;
+  }
+  :root[data-theme="win95"] .drawer .nav-item:is([data-view="downloads"], [data-view="messages"], [data-view="settings"])::after {
+    content: ""; position: absolute; left: 2px; right: 2px; top: -6px;
+    border-top: 1px solid #808080; border-bottom: 1px solid #fff;
+  }
+  :root[data-theme="win95"] .drawer .logo-box { padding: 12px 8px; background: #000; box-shadow: var(--w95-field); }
+  :root[data-theme="win95"] .drawer .head-box {
+    margin-top: 8px; padding: 14px 10px 10px; border: 1px solid #808080; box-shadow: inset 1px 1px #fff, 1px 1px #fff;
+  }
+  :root[data-theme="win95"] .drawer .head-box > .box-title {
+    display: table; margin: calc(-14.5px - .7em) 0 6px -4px; padding: 0 3px; min-height: 0;
+    background: var(--w95-face); color: #000; font-weight: normal;
+  }
+  :root[data-theme="win95"] .drawer .sysinfo { padding: 4px 0 10px 44px; background: var(--w95-v-settings) left 2px / 32px 32px no-repeat; }
+  :root[data-theme="win95"] .drawer .statline > span:first-child {
+    display: inline-flex; align-items: center; gap: 6px; padding-left: 4px;
+  }
+  :root[data-theme="win95"] .drawer .statline > span:first-child::before {
+    content: ""; width: 16px; height: 16px; background: var(--w95-i-network) no-repeat;
+  }
+  :root[data-theme="win95"] .drawer .account .btn { flex: 1 1 0; }
 }
 
 /* Loading: one "Please wait..." panel with the Find animation and a

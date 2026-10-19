@@ -228,7 +228,9 @@ function showView(view) {
   }
   // The chat is laid out to fit the viewport exactly (see .chat-mode in app.css).
   document.body.classList.toggle("chat-mode", view === "messages");
-  $("#appbar-title").textContent = VIEW_TITLES[view] || view.toUpperCase();
+  const title = $("#appbar-title");
+  title.textContent = VIEW_TITLES[view] || view.toUpperCase();
+  title.dataset.view = view;
   if (COMPACT.matches) {
     // Picked from the drawer: land at the top of the new view, not halfway
     // down wherever the previous one was scrolled to.
@@ -573,6 +575,8 @@ function applyCursor(cursor) {
 // I-beam, a modal dialog) is shown natively and the overlay hides.
 const FX_CURSORS = new Set(["blazing"]);
 const FINE_POINTER = "(hover: hover) and (pointer: fine)";
+/** Screens up to this size (longest side, CSS px) are never wider than the content: no starfield. */
+const STARS_MIN_SCREEN = 1200;
 const cursorFx = { x: 0, y: 0, target: null, frame: 0 };
 
 function syncCursorFx() {
@@ -821,12 +825,26 @@ function renderSettings() {
     chip.setAttribute("aria-checked", String(active));
   }
   $("#theme-detail").textContent = THEMES[theme].detail;
+  // The stars live in the margins beside the content, which only a screen
+  // wider than the content has: on phones and small tablets the setting
+  // could never show anything. The Windows 95 theme draws none, so there
+  // it is greyed rather than hidden (switching back brings them back).
+  $("#stars-setting").hidden = Math.max(screen.width, screen.height) <= STARS_MIN_SCREEN;
+  const noStars = theme === "win95";
+  $("#stars-setting").classList.toggle("unavailable", noStars);
+  $("#stars-note").textContent = noStars
+    ? "Not drawn by the Windows 95 theme. Pick another theme to use it."
+    : "Pixel stars in the empty margins left and right of the screen (wide displays only).";
   const stars = starsEnabled() ? "on" : "off";
   for (const chip of document.querySelectorAll("#stars-options .chip")) {
     const active = chip.dataset.stars === stars;
     chip.classList.toggle("active", active);
     chip.setAttribute("aria-checked", String(active));
+    chip.disabled = noStars;
   }
+  // Touch screens have no pointer to draw (the CSS cursors apply to a
+  // fine pointer only, see FINE_POINTER).
+  $("#cursor-setting").hidden = !matchMedia(FINE_POINTER).matches;
   const kult = kultEnabled() ? "on" : "off";
   for (const chip of document.querySelectorAll("#kult-options .chip")) {
     const active = chip.dataset.kult === kult;
@@ -4629,7 +4647,9 @@ function tickClock() {
   $("#clock-time").textContent = `${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`;
   $("#clock-date").textContent = `${two(now.getMonth() + 1)}-${two(now.getDate())}-${two(now.getFullYear() % 100)}`;
   // The taskbar clock (Windows 95 theme) shows minutes only, as Windows does.
-  $("#tray-clock").textContent = `${two(now.getHours())}:${two(now.getMinutes())}`;
+  const short = `${two(now.getHours())}:${two(now.getMinutes())}`;
+  $("#tray-clock").textContent = short;
+  $("#appbar-clock").textContent = short;
 }
 
 // ---------- messages (chat rooms) ----------
@@ -6293,6 +6313,10 @@ document.addEventListener("DOMContentLoaded", () => {
   chipGroup("#kult-options .chip", (chip) => {
     applyKult(chip.dataset.kult === "on");
     renderSettings();
+  });
+  // A mouse plugged into a tablet (or removed) changes what Settings offers.
+  matchMedia(FINE_POINTER).addEventListener("change", () => {
+    if (state.view === "settings") renderSettings();
   });
   chipGroup("#cursor-options .chip", (chip) => {
     applyCursor(chip.dataset.cursorId);

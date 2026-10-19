@@ -148,6 +148,8 @@
           </g>
         </svg>
       </span>
+      <!-- Windows 95 theme only: the clock beside Kult in the taskbar tray. -->
+      <span class="appbar-clock" id="appbar-clock" aria-hidden="true"></span>
       <!-- Messages only: opens the room list panel on the right. -->
       <button type="button" class="btn appbar-rooms" id="rooms-open" aria-controls="irc-side" aria-expanded="false">[ # ROOMS ]<span class="appbar-dot" id="rooms-dot" hidden></span></button>
     </div>
@@ -524,13 +526,13 @@
           </div>
           <p class="setting-note dim" id="theme-detail"></p>
         </div>
-        <div class="setting">
+        <div class="setting" id="stars-setting">
           <p class="setting-label" id="stars-label">STARFIELD:</p>
           <div class="chips setting-options" id="stars-options" role="radiogroup" aria-labelledby="stars-label">
             <button type="button" class="chip" data-stars="on" role="radio" aria-checked="false">ON</button>
             <button type="button" class="chip" data-stars="off" role="radio" aria-checked="false">OFF</button>
           </div>
-          <p class="setting-note dim">Pixel stars in the empty margins left and right of the screen (wide displays only).</p>
+          <p class="setting-note dim" id="stars-note"></p>
         </div>
         <div class="setting">
           <p class="setting-label" id="kult-label">KULT:</p>
@@ -540,7 +542,7 @@
           </div>
           <p class="setting-note dim">The skeleton mascot: dances (backflips included) while music plays, sleeps when it stops.</p>
         </div>
-        <div class="setting">
+        <div class="setting" id="cursor-setting">
           <p class="setting-label" id="cursor-label">CURSOR:</p>
           <div class="chips setting-options" id="cursor-options" role="radiogroup" aria-labelledby="cursor-label">
             <button type="button" class="chip" data-cursor-id="basic" role="radio" aria-checked="false">BASIC</button>
@@ -550,7 +552,7 @@
           </div>
           <p class="setting-note dim" id="cursor-detail"></p>
         </div>
-        <p class="setting-note dim">THEME, STARFIELD, KULT AND CURSOR ARE SAVED IN THIS BROWSER ONLY.</p>
+        <p class="setting-note dim">THESE DISPLAY SETTINGS ARE SAVED IN THIS BROWSER ONLY.</p>
       </section>
 
       <section class="view" id="view-admin" aria-labelledby="admin-title" hidden>
