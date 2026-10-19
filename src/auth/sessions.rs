@@ -141,18 +141,6 @@ impl Sessions {
     pub fn revoke_user(&self, user: UserId) {
         lock(&self.map).retain(|_, s| s.user != user);
     }
-
-    /// How many distinct users have used a live session within `window`.
-    /// A user signed in on several browsers counts once.
-    pub fn active_users(&self, window: Duration) -> usize {
-        let now = Instant::now();
-        let map = lock(&self.map);
-        map.values()
-            .filter(|s| !self.expired(s, now) && now.duration_since(s.last_seen) < window)
-            .map(|s| s.user)
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-    }
 }
 
 /// How long the second login step may take after the password was right.
@@ -426,19 +414,6 @@ mod tests {
         let t = short.create(UserId(3), false);
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(short.resolve(&t), None);
-    }
-
-    #[test]
-    fn active_users_counts_each_user_once() {
-        let sessions = Sessions::new(SessionPolicy::default());
-        assert_eq!(sessions.active_users(Duration::from_secs(60)), 0);
-        sessions.create(UserId(1), false);
-        sessions.create(UserId(1), false);
-        let b = sessions.create(UserId(2), false);
-        assert_eq!(sessions.active_users(Duration::from_secs(60)), 2);
-        sessions.revoke(&b);
-        assert_eq!(sessions.active_users(Duration::from_secs(60)), 1);
-        assert_eq!(sessions.active_users(Duration::ZERO), 0);
     }
 
     #[test]

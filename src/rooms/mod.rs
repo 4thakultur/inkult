@@ -18,10 +18,11 @@
 //! any more is deleted, since no one could see or moderate it.
 //!
 //! These rooms live on this server only; they are not Soulseek network
-//! rooms. History is bounded per room and persisted (see [`store`]). Who is
-//! "online" in a room is not persisted: it means the member's browser has
-//! looked at the room within the last [`ONLINE_WINDOW`].
+//! rooms. History is bounded per room and persisted (see [`store`]).
+//! Member lists show each member's online status, which is per user and
+//! not persisted (see [`live`]).
 
+pub mod live;
 mod store;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -31,6 +32,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OnceCell, Semaphore};
 
+use self::live::{Audience, PresenceBoard, Status};
 use self::store::RoomStore;
 pub use self::store::StoreError;
 use crate::auth::password::{self, MAX_PASSWORD_CHARS, random_id};
@@ -52,7 +54,6 @@ const MAX_TEXT_LINES: usize = 20;
 pub const MAX_TOPIC_CHARS: usize = 200;
 const MIN_NAME_CHARS: usize = 2;
 pub const MAX_NAME_CHARS: usize = 32;
-const ONLINE_WINDOW: Duration = Duration::from_secs(30);
 /// Flood control: at most this many messages per user per window.
 const FLOOD_MAX: usize = 8;
 const FLOOD_WINDOW: Duration = Duration::from_secs(10);
@@ -265,6 +266,16 @@ impl RoomRecord {
         self.owner == actor.id || actor.role.is_captain()
     }
 
+    /// Who may learn this room changed: everyone for a public room (it is
+    /// in everyone's room list), only its members for a private one.
+    fn audience(&self) -> Audience {
+        if self.is_private() {
+            Audience::Only(self.members.keys().copied().collect())
+        } else {
+            Audience::Everyone
+        }
+    }
+
     fn is_private(&self) -> bool {
         self.password_hash.is_some()
     }
@@ -329,7 +340,7 @@ impl MessageView {
 pub struct RoomUser {
     pub name: String,
     pub owner: bool,
-    pub online: bool,
+    pub status: Status,
 }
 
 /// An open room: its summary, messages and user list.
@@ -343,8 +354,6 @@ pub struct RoomView {
 #[derive(Default)]
 struct Inner {
     rooms: BTreeMap<RoomId, RoomRecord>,
-    /// When each member last looked at each room.
-    presence: HashMap<RoomId, HashMap<UserId, Instant>>,
     /// Recent message times per user, for flood control.
     sent: HashMap<UserId, VecDeque<Instant>>,
     /// Recent wrong private-room passwords per user.
@@ -395,21 +404,7 @@ impl Inner {
         }
     }
 
-    fn touch(&mut self, room: RoomId, user: UserId) {
-        self.presence
-            .entry(room)
-            .or_default()
-            .insert(user, Instant::now());
-    }
-
-    fn is_online(&self, room: RoomId, user: UserId) -> bool {
-        self.presence
-            .get(&room)
-            .and_then(|p| p.get(&user))
-            .is_some_and(|at| at.elapsed() < ONLINE_WINDOW)
-    }
-
-    fn summary(&self, room: &RoomRecord, viewer: &User) -> RoomSummary {
+    fn summary(&self, room: &RoomRecord, viewer: &User, presence: &PresenceBoard) -> RoomSummary {
         RoomSummary {
             id: room.id,
             name: room.name.clone(),
@@ -422,7 +417,7 @@ impl Inner {
             online: room
                 .members
                 .keys()
-                .filter(|&&id| self.is_online(room.id, id))
+                .filter(|&&id| presence.status(id) != Status::Offline)
                 .count(),
             joined: room.members.contains_key(&viewer.id),
             unread: room.unread(viewer.id),
@@ -435,7 +430,13 @@ impl Inner {
         }
     }
 
-    fn view(&self, room: &RoomRecord, viewer: &User, after: Option<u64>) -> RoomView {
+    fn view(
+        &self,
+        room: &RoomRecord,
+        viewer: &User,
+        after: Option<u64>,
+        presence: &PresenceBoard,
+    ) -> RoomView {
         let messages: Vec<&StoredMessage> = match after {
             Some(after) => room.messages.iter().filter(|m| m.seq > after).collect(),
             None => {
@@ -449,12 +450,12 @@ impl Inner {
             .map(|(&id, member)| RoomUser {
                 name: member.name.clone(),
                 owner: id == room.owner,
-                online: self.is_online(room.id, id),
+                status: presence.status(id),
             })
             .collect();
-        users.sort_by(|a, b| (!a.online, &a.name).cmp(&(!b.online, &b.name)));
+        users.sort_by(|a, b| (a.status, &a.name).cmp(&(b.status, &b.name)));
         RoomView {
-            room: self.summary(room, viewer),
+            room: self.summary(room, viewer, presence),
             messages: messages
                 .into_iter()
                 .map(|m| MessageView::new(m, viewer.id))
@@ -486,6 +487,7 @@ pub struct Rooms {
     /// Checked when no private room has the given name, so an unknown
     /// name takes as long as a wrong password.
     dummy_hash: OnceCell<String>,
+    presence: PresenceBoard,
 }
 
 impl Rooms {
@@ -500,7 +502,13 @@ impl Rooms {
             }),
             hashing: Semaphore::new(MAX_CONCURRENT_HASHES),
             dummy_hash: OnceCell::new(),
+            presence: PresenceBoard::default(),
         })
+    }
+
+    /// Online status, shared by every room's member list.
+    pub fn presence(&self) -> &PresenceBoard {
+        &self.presence
     }
 
     async fn hash(&self, secret: &str) -> Result<String, RoomError> {
@@ -544,7 +552,6 @@ impl Rooms {
         match self.store.remove(id).await {
             Ok(()) => {
                 inner.rooms.remove(&id);
-                inner.presence.remove(&id);
                 tracing::info!(room = %name, "empty private chat room deleted");
             }
             Err(e) => {
@@ -556,10 +563,14 @@ impl Rooms {
     /// Save a room after a change that has already happened in memory.
     /// Memory stays authoritative on failure (the next save catches up), so
     /// a message is never reported as failed after others have seen it.
+    ///
+    /// Every change others can see is saved, so this is also where open
+    /// tabs are told to look again.
     async fn persist(&self, room: &RoomRecord) {
         if let Err(e) = self.store.save(room).await {
             tracing::error!(room = %room.name, error = %e, "failed to save chat room");
         }
+        self.presence.nudge(room.audience());
     }
 
     /// Every public room, joined or not, and the private rooms the actor
@@ -570,7 +581,7 @@ impl Rooms {
             .rooms
             .values()
             .filter(|r| r.visible_to(actor.id))
-            .map(|r| inner.summary(r, actor))
+            .map(|r| inner.summary(r, actor, &self.presence))
             .collect();
         rooms.sort_by(|a, b| a.name.cmp(&b.name));
         rooms
@@ -646,8 +657,8 @@ impl Rooms {
         // the user would otherwise lose it on the next restart.
         self.store.save(&room).await?;
         tracing::info!(room = %room.name, owner = %actor.username, private = room.is_private(), "chat room created");
-        inner.touch(id, actor.id);
-        let view = inner.view(&room, actor, None);
+        let view = inner.view(&room, actor, None, &self.presence);
+        self.presence.nudge(room.audience());
         inner.rooms.insert(id, room);
         Ok(view)
     }
@@ -678,11 +689,12 @@ impl Rooms {
             return Err(RoomError::NotOwner);
         }
         let name = room.name.clone();
+        let audience = room.audience();
         // Disk first: a room that comes back after a restart would be worse
         // than an error now.
         self.store.remove(id).await?;
+        self.presence.nudge(audience);
         inner.rooms.remove(&id);
-        inner.presence.remove(&id);
         tracing::info!(room = %name, by = %actor.username, "chat room deleted");
         Ok(())
     }
@@ -776,9 +788,8 @@ impl Rooms {
             let snapshot = room.clone();
             self.persist(&snapshot).await;
         }
-        inner.touch(id, actor.id);
         let room = inner.room(id)?;
-        Ok(inner.view(room, actor, None))
+        Ok(inner.view(room, actor, None, &self.presence))
     }
 
     pub async fn leave(&self, actor: &User, id: RoomId) -> Result<(), RoomError> {
@@ -788,9 +799,6 @@ impl Rooms {
             room.push(actor, MessageKind::Left, String::new());
             let snapshot = room.clone();
             self.persist(&snapshot).await;
-        }
-        if let Some(presence) = inner.presence.get_mut(&id) {
-            presence.remove(&actor.id);
         }
         self.drop_if_abandoned(&mut inner, id).await;
         Ok(())
@@ -814,9 +822,8 @@ impl Rooms {
         // Read positions are saved with the room's next change rather than
         // on every poll; after a crash a few messages may show unread again.
         member.last_read = member.last_read.max(latest);
-        inner.touch(id, actor.id);
         let room = inner.room(id)?;
-        Ok(inner.view(room, actor, after))
+        Ok(inner.view(room, actor, after, &self.presence))
     }
 
     /// Post a message. `/me text` is sent as an action, as on IRC.
@@ -909,7 +916,6 @@ impl Rooms {
         }
         let snapshot = room.clone();
         self.persist(&snapshot).await;
-        inner.touch(id, actor.id);
         Ok(sent.iter().map(|m| MessageView::new(m, actor.id)).collect())
     }
 
@@ -953,7 +959,7 @@ impl Rooms {
             self.persist(&snapshot).await;
         }
         let room = inner.room(id)?;
-        Ok(inner.summary(room, actor))
+        Ok(inner.summary(room, actor, &self.presence))
     }
 
     /// A deleted account leaves every room. Its messages stay (under the
@@ -968,9 +974,7 @@ impl Rooms {
                 changed.push(room.clone());
             }
         }
-        for presence in inner.presence.values_mut() {
-            presence.remove(&user);
-        }
+        self.presence.forget(user);
         inner.sent.remove(&user);
         inner.join_failures.remove(&user);
         for room in &changed {
@@ -1208,6 +1212,72 @@ mod tests {
         assert!(rooms.list(&alice).await.is_empty());
         let reopened = open(dir.path()).await;
         assert!(reopened.list(&alice).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn users_are_listed_by_status_then_name_in_every_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let rooms = open(dir.path()).await;
+        let names = ["dora", "carl", "bea", "abe"];
+        let users: Vec<User> = (1..)
+            .zip(names)
+            .map(|(id, name)| user(id, name, Role::Pirate))
+            .collect();
+        let mut ids = Vec::new();
+        for name in ["deep", "dub"] {
+            let id = rooms
+                .create(&users[0], name, None, None)
+                .await
+                .unwrap()
+                .room
+                .id;
+            for u in &users[1..] {
+                rooms.join(u, id).await.unwrap();
+            }
+            ids.push(id);
+        }
+        // Being in a room is not being online: only the tabs say so.
+        let board = rooms.presence();
+        board
+            .report(users[0].id, "s0", "t0", Status::Online)
+            .unwrap();
+        board
+            .report(users[2].id, "s2", "t2", Status::Online)
+            .unwrap();
+        board.report(users[1].id, "s1", "t1", Status::Idle).unwrap();
+        for id in ids {
+            let view = rooms.view(&users[0], id, None).await.unwrap();
+            let listed: Vec<(&str, Status)> = view
+                .users
+                .iter()
+                .map(|u| (u.name.as_str(), u.status))
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    ("bea", Status::Online),
+                    ("dora", Status::Online),
+                    ("carl", Status::Idle),
+                    ("abe", Status::Offline),
+                ]
+            );
+            assert_eq!(view.room.online, 3);
+        }
+        // Closing the last tab is seen at once, everywhere.
+        board
+            .report(users[2].id, "s2", "t2", Status::Offline)
+            .unwrap();
+        for id in rooms.list(&users[0]).await.iter().map(|r| r.id) {
+            let view = rooms.view(&users[0], id, None).await.unwrap();
+            assert!(
+                view.users
+                    .iter()
+                    .any(|u| u.name == "bea" && u.status == Status::Offline)
+            );
+        }
+        // A deleted account is gone from the board too.
+        rooms.forget_user(users[1].id).await;
+        assert_eq!(rooms.presence().status(users[1].id), Status::Offline);
     }
 
     #[tokio::test]

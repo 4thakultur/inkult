@@ -69,11 +69,6 @@ const INVALID_HANDLE_THROTTLE_KEY: &str = "#invalid-handle";
 /// Failed logins in a row that lock an account until a captain unlocks it.
 /// The throttle slows guessing down; this caps it for good.
 pub const MAX_FAILED_LOGINS: u32 = 10;
-/// A user counts as online while any of their sessions made a request this
-/// recently. An open page polls every few seconds, and browsers slow
-/// background tabs to about one timer a minute, so two minutes keeps a
-/// backgrounded tab online without lingering long after it is closed.
-const ONLINE_WINDOW: Duration = Duration::from_secs(120);
 /// How long a QR code shown for setting up 2FA stays valid.
 const ENROLLMENT_TTL: Duration = Duration::from_secs(600);
 pub const DEFAULT_TOTP_ISSUER: &str = "Inkult";
@@ -696,11 +691,6 @@ impl Auth {
 
     pub fn logout(&self, token: &str) {
         self.sessions.revoke(token);
-    }
-
-    /// Users whose browser has talked to the server within [`ONLINE_WINDOW`].
-    pub fn online_count(&self) -> usize {
-        self.sessions.active_users(ONLINE_WINDOW)
     }
 
     /// The current account behind a session token. Roles are read live, so

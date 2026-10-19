@@ -11,6 +11,13 @@
 //!   proxies in `INKULT_TRUSTED_PROXIES` are exempt from the per-client cap:
 //!   they carry everyone's connections and are expected to limit clients
 //!   themselves).
+//!
+//! Connections are served with upgrades for the live socket (`/api/live`).
+//! hyper-util's graceful shutdown does not take upgradeable HTTP/1
+//! connections (only through its HTTP/2-capable builder, which Inkult does
+//! not need), so shutdown is signalled to each connection here instead.
+//! An upgraded socket leaves these counts once upgraded; it is limited
+//! per account instead (see `rooms::live`).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -22,9 +29,8 @@ use axum::Router;
 use axum::body::Body;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use tower_service::Service;
 
 use super::client::{ClientPolicy, PeerAddr};
@@ -85,7 +91,7 @@ pub async fn serve(
     clients: Arc<ClientPolicy>,
     shutdown: impl Future<Output = ()>,
 ) {
-    let graceful = GracefulShutdown::new();
+    let (stopping, stop) = watch::channel(false);
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let per_client: PerClient = Arc::default();
     tokio::pin!(shutdown);
@@ -136,10 +142,22 @@ pub async fn serve(
         let connection = hyper::server::conn::http1::Builder::new()
             .timer(TokioTimer::new())
             .header_read_timeout(HEADER_READ_TIMEOUT)
-            .serve_connection(TokioIo::new(stream), service);
-        let connection = graceful.watch(connection);
+            .serve_connection(TokioIo::new(stream), service)
+            // The live socket (`/api/live`) is an upgraded connection.
+            .with_upgrades();
+        let mut stop = stop.clone();
         tokio::spawn(async move {
-            if let Err(e) = connection.await {
+            let mut connection = std::pin::pin!(connection);
+            let result = tokio::select! {
+                result = connection.as_mut() => result,
+                // The guard `wait_for` returns must not live across awaits.
+                () = async { drop(stop.wait_for(|stopping| *stopping).await) } => {
+                    // Finish the request in flight, then close.
+                    connection.as_mut().graceful_shutdown();
+                    connection.await
+                }
+            };
+            if let Err(e) = result {
                 tracing::debug!(client = %ip, error = %e, "connection ended with an error");
             }
             drop(slot);
@@ -148,8 +166,12 @@ pub async fn serve(
     }
 
     drop(listener);
+    let _ = stopping.send(true);
+    // Every open connection holds a permit: having them all back means
+    // every connection has finished.
+    let all = u32::try_from(MAX_CONNECTIONS).unwrap_or(u32::MAX);
     tokio::select! {
-        () = graceful.shutdown() => {}
+        _ = connections.acquire_many(all) => {}
         () = tokio::time::sleep(SHUTDOWN_GRACE) => {
             tracing::info!("closing connections still open after {} s", SHUTDOWN_GRACE.as_secs());
         }

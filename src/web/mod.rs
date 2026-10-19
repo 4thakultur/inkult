@@ -10,6 +10,7 @@
 //! hardening headers.
 
 mod client;
+mod live;
 mod redact;
 mod rooms;
 mod server;
@@ -70,6 +71,10 @@ static VERSIONED_INDEX_HTML: LazyLock<String> = LazyLock::new(|| {
         html.replace(quoted, &format!("\"{path}?v={}\"", content_tag(body)))
     })
 });
+
+/// The build of app.js this server hands out, as tagged in the page. Open
+/// tabs compare it with their own to notice that Inkult was updated.
+pub(crate) static APP_JS_TAG: LazyLock<String> = LazyLock::new(|| content_tag(APP_JS));
 
 /// First 12 hex digits of the SHA-256 of an asset: plenty to tell builds apart.
 fn content_tag(body: &str) -> String {
@@ -134,6 +139,7 @@ pub fn router(app: AppState, clients: Arc<ClientPolicy>) -> Router {
         .route("/api/stream/{id}/waveform", get(stream_waveform))
         .merge(soulseek::routes())
         .merge(rooms::routes())
+        .merge(live::routes())
         // Inside `require_user`, which tells it who is asking.
         .route_layer(middleware::from_fn_with_state(
             Arc::new(redact::PathRedactor::new(app.config())),
@@ -406,7 +412,7 @@ async fn same_origin_writes(request: Request, next: Next) -> Response {
 
 /// The browser says the request comes from another site (`cross-site`) or
 /// a sibling subdomain (`same-site`, e.g. another app on the same domain).
-fn cross_site_fetch(headers: &HeaderMap) -> bool {
+pub(crate) fn cross_site_fetch(headers: &HeaderMap) -> bool {
     headers
         .get("sec-fetch-site")
         .and_then(|v| v.to_str().ok())
@@ -415,7 +421,7 @@ fn cross_site_fetch(headers: &HeaderMap) -> bool {
         })
 }
 
-fn origin_matches_host(headers: &HeaderMap) -> bool {
+pub(crate) fn origin_matches_host(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
     };

@@ -554,6 +554,13 @@ unencrypted. Either:
   If your proxy runs in Docker, attach both containers to a shared network
   and proxy to `inkult:9876`; the published port is then not needed.
 
+  The proxy must also let **WebSockets** through (`/api/live`): each open
+  tab keeps one, which is how chat messages and who's online show up
+  instantly. Caddy and Traefik do this by default; in Nginx Proxy Manager,
+  turn on "Websockets Support"; with plain Nginx, forward the `Upgrade` and
+  `Connection` headers. Without it Inkult still works, but rooms refresh
+  every few seconds instead of instantly.
+
   Also set **`INKULT_TRUSTED_PROXIES`** to the proxy's address as Inkult sees
   it. Sign-in and connection limits are per client, and behind a proxy every
   connection comes from the proxy; only a listed proxy may name the real

@@ -198,6 +198,7 @@ let toastTimer = null;
 function toast(message, isError = false) {
   const el = $("#toast");
   el.textContent = message;
+  el.onclick = null;
   el.classList.toggle("error", isError);
   el.hidden = false;
   clearTimeout(toastTimer);
@@ -4708,6 +4709,8 @@ const rooms = {
   list: [],
   /** JSON of the last rendered list, to skip needless re-renders. */
   listKey: "",
+  /** Last user list drawn, to skip identical redraws. */
+  usersKey: "",
   /** Open room id, or null. */
   current: null,
   /** Last view of the open room: { room, users }. */
@@ -4716,7 +4719,164 @@ const rooms = {
   lastSeq: 0,
   timer: null,
   ticking: false,
+  /** A refresh was asked for while one was running. */
+  again: false,
 };
+
+// ---------- live: presence and push ----------
+
+/**
+ * Each tab keeps one WebSocket to the server (/api/live). The open socket
+ * is this tab's presence: "online" while on screen, "idle" while hidden,
+ * and offline the moment it closes, so every room and every window shows
+ * the same status. The server also nudges the socket ("changed") whenever
+ * a room or someone's status changes, and the tab refetches at once.
+ *
+ * Without a socket (a reverse proxy that refuses WebSockets) the tab falls
+ * back to reporting its status over plain requests with a heartbeat, and
+ * to polling rooms more often.
+ */
+const live = {
+  socket: null,
+  /** True once the server said hello on the current socket. */
+  connected: false,
+  attempts: 0,
+  retryTimer: null,
+  heartbeat: null,
+  /** Set while the page is being closed, until it comes back (bfcache). */
+  closing: false,
+};
+const LIVE_RETRY_MAX_MS = 30000;
+const PRESENCE_HEARTBEAT_MS = 15000;
+// The app.js build this page runs, from its ?v= tag (see index.html).
+const APP_TAG = (() => {
+  try { return new URL(document.currentScript.src).searchParams.get("v"); } catch { return null; }
+})();
+// crypto.randomUUID needs a secure context; plain-HTTP homelabs have none.
+const TAB_ID = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
+
+const tabStatus = () => (document.hidden ? "idle" : "online");
+
+function liveConnect() {
+  clearTimeout(live.retryTimer);
+  if (!state.user || live.closing || live.socket) return;
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${scheme}//${location.host}/api/live?status=${tabStatus()}`);
+  live.socket = socket;
+  socket.addEventListener("message", (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === "hello") {
+      live.connected = true;
+      live.attempts = 0;
+      stopPresenceFallback();
+      // The status may have changed while connecting.
+      liveSend();
+      liveChanged();
+      if (APP_TAG && msg.version && msg.version !== APP_TAG) offerReload();
+    } else if (msg.type === "changed") {
+      liveChanged();
+    }
+  });
+  socket.addEventListener("close", (e) => {
+    if (live.socket !== socket) return;
+    const wasConnected = live.connected;
+    live.socket = null;
+    live.connected = false;
+    if (!state.user || live.closing) return;
+    // Polling and status reports take over until the socket is back.
+    startPresenceFallback();
+    roomsSchedule(0);
+    if (e.code === 4401 || !wasConnected) {
+      // Maybe the session ended; this request shows the login if so.
+      api("/api/auth/me").catch(() => {});
+    }
+    const delay = Math.min(LIVE_RETRY_MAX_MS, 1000 * 2 ** live.attempts);
+    live.attempts += 1;
+    live.retryTimer = setTimeout(liveConnect, delay);
+  });
+}
+
+function liveSend() {
+  if (live.connected && live.socket.readyState === WebSocket.OPEN) {
+    live.socket.send(JSON.stringify({ status: tabStatus() }));
+  } else {
+    reportPresence();
+  }
+}
+
+function liveStop() {
+  clearTimeout(live.retryTimer);
+  stopPresenceFallback();
+  const socket = live.socket;
+  live.socket = null;
+  live.connected = false;
+  if (socket) socket.close(1000);
+}
+
+/** Something changed on the server: refresh what this tab shows. */
+function liveChanged() {
+  roomsSchedule(0);
+  loadOnline();
+}
+
+/** This page is an older build than the server's: stays up until used. */
+function offerReload() {
+  toast("INKULT WAS UPDATED. CLICK HERE TO RELOAD.");
+  clearTimeout(toastTimer);
+  $("#toast").onclick = () => location.reload();
+}
+
+/** Fallback without a socket: tell the server over a plain request. */
+function reportPresence(status = tabStatus()) {
+  if (!state.user || live.closing) return;
+  fetch("/api/presence", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tab: TAB_ID, status }),
+  }).catch(() => { /* the heartbeat retries */ });
+}
+
+function startPresenceFallback() {
+  if (live.heartbeat) return;
+  reportPresence();
+  live.heartbeat = setInterval(() => reportPresence(), PRESENCE_HEARTBEAT_MS);
+}
+
+function stopPresenceFallback() {
+  if (!live.heartbeat) return;
+  clearInterval(live.heartbeat);
+  live.heartbeat = null;
+  // The socket stands for this tab now; drop the report so it doesn't
+  // linger as a second tab until it expires.
+  reportPresence("offline");
+}
+
+function setupLive() {
+  document.addEventListener("visibilitychange", () => {
+    if (live.closing) return;
+    liveSend();
+    // Back on screen after a long sleep (phones suspend hidden tabs).
+    if (!document.hidden && !live.socket) liveConnect();
+  });
+  window.addEventListener("pagehide", () => {
+    if (!state.user || live.closing) return;
+    // Closing also hides the page; that "idle" must not follow.
+    live.closing = true;
+    // Without a socket, say goodbye with a beacon: it is delivered even
+    // as the page goes away, a fetch is not. Beacons only send plain
+    // text, which the server accepts here.
+    if (live.heartbeat) {
+      navigator.sendBeacon("/api/presence", JSON.stringify({ tab: TAB_ID, status: "offline" }));
+    }
+    liveStop();
+  });
+  // Back from the back/forward cache: the page is open again.
+  window.addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    live.closing = false;
+    liveConnect();
+  });
+}
 
 function updateRoomsBadge(total) {
   const badge = $("#rooms-badge");
@@ -4731,8 +4891,13 @@ function roomsSchedule(delay) {
 }
 
 async function roomsTick() {
-  if (rooms.ticking) return;
+  if (rooms.ticking) {
+    // A nudge during a refresh: run again right after it.
+    rooms.again = true;
+    return;
+  }
   rooms.ticking = true;
+  rooms.again = false;
   try {
     if (state.view === "messages") {
       // The open room first: viewing it marks it read before the list
@@ -4748,7 +4913,12 @@ async function roomsTick() {
   } finally {
     rooms.ticking = false;
   }
-  roomsSchedule(state.view === "messages" ? 2000 : 15000);
+  // With the live socket, changes are pushed and polling is only a safety
+  // net; without it, polling is how changes arrive.
+  const delay = live.connected
+    ? (state.view === "messages" ? 30000 : 60000)
+    : (state.view === "messages" ? 2000 : 15000);
+  roomsSchedule(rooms.again ? 0 : delay);
 }
 
 function roomsEnter() {
@@ -5142,29 +5312,64 @@ function roomLine(m, roomName, roomId) {
   return h("div", { class: cls }, time, ...body);
 }
 
+const STATUS_LABEL = { online: "online", idle: "idle", offline: "offline" };
+
+/** Same colour for a handle everywhere, like a default chat avatar. */
+function avatarHue(name) {
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  return hash % 6;
+}
+
+function roomUser(u) {
+  const status = STATUS_LABEL[u.status] || STATUS_LABEL.offline;
+  return h("li", {},
+    h("button", {
+      type: "button", class: "irc-user", "data-status": u.status,
+      title: `${u.name}${u.owner ? ", room owner" : ""}, ${status}. Click to address.`,
+      onclick: () => {
+        const input = $("#room-input");
+        if (!input) return;
+        input.value = `${u.name}: ${input.value}`;
+        input.focus();
+      },
+    },
+    h("span", { class: "irc-avatar", "data-hue": avatarHue(u.name), "aria-hidden": "true" },
+      // First letter, not first code unit, so an emoji handle stays whole.
+      [...u.name][0].toUpperCase(),
+      h("span", { class: "irc-status" })),
+    h("span", { class: "irc-user-name keep-case" }, u.name),
+    u.owner ? h("span", { class: "irc-crown", role: "img", "aria-label": "room owner" }) : null,
+    h("span", { class: "visually-hidden" }, `, ${status}`)));
+}
+
+/**
+ * Members of the open room, Discord style: everyone who joined, online
+ * first, then idle (Inkult open but not on screen), then offline; the
+ * server sorts them. Re-drawn only when someone changes,
+ * so the 2 s poll does not steal hover or focus.
+ */
 function renderRoomUsers() {
   const panel = $("#room-users");
   if (!rooms.view) {
+    rooms.usersKey = "";
     panel.hidden = true;
     panel.replaceChildren();
     return;
   }
   const users = rooms.view.users;
-  const online = users.filter((u) => u.online).length;
+  const key = JSON.stringify(users);
+  if (!panel.hidden && key === rooms.usersKey) return;
+  rooms.usersKey = key;
+  const groups = [
+    ["ONLINE", users.filter((u) => u.status !== "offline")],
+    ["OFFLINE", users.filter((u) => u.status === "offline")],
+  ].filter(([, list]) => list.length);
   panel.hidden = false;
-  panel.replaceChildren(
-    h("p", { class: "irc-heading" }, `USERS ${online}/${users.length}:`),
-    h("ul", { class: "irc-user-list" }, users.map((u) => h("li", {},
-      h("button", {
-        type: "button", class: u.online ? "irc-user keep-case" : "irc-user keep-case dim",
-        title: `${u.owner ? "Room owner, " : ""}${u.online ? "here now" : "away"}; click to address`,
-        onclick: () => {
-          const input = $("#room-input");
-          if (!input) return;
-          input.value = `${u.name}: ${input.value}`;
-          input.focus();
-        },
-      }, `${u.owner ? "@" : " "}${u.name}`)))));
+  panel.replaceChildren(h("div", { class: "irc-user-list" }, groups.flatMap(([label, list]) => [
+    h("p", { class: "irc-heading irc-user-group" }, `${label} \u2014 ${list.length}`),
+    h("ul", { class: "irc-user-group-list", "aria-label": `${label.toLowerCase()} members` }, list.map(roomUser)),
+  ])));
 }
 
 function renderRoomHead(room) {
@@ -5471,6 +5676,7 @@ async function submitGate(event) {
 function sessionLost() {
   if (!state.user) return;
   state.user = null;
+  liveStop();
   clearTimeout(state.pollTimer);
   clearTimeout(slsk.timer);
   clearTimeout(rooms.timer);
@@ -5761,6 +5967,9 @@ async function startSession(user, knownPassword = null) {
 }
 
 async function logOff() {
+  // The server closes this session's sockets; that is not a lost session.
+  live.closing = true;
+  liveStop();
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* reload anyway */ }
   location.reload();
 }
@@ -6263,7 +6472,9 @@ function enterApp(user) {
     setInterval(loadOnline, ONLINE_POLL_MS);
     setupPlayer();
     setupSoulseek();
+    setupLive();
   }
+  liveConnect();
   loadStatus();
   loadOnline();
   slskSchedule(0);

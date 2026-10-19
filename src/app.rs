@@ -509,9 +509,10 @@ impl App {
         }
     }
 
-    /// How many crew members currently have Inkult open.
+    /// How many crew members currently have Inkult open (the same status
+    /// the rooms' member lists show).
     pub fn online_count(&self) -> usize {
-        self.auth.online_count()
+        self.rooms.presence().present_users()
     }
 
     pub async fn status(&self, actor: &User) -> Status {
@@ -1742,6 +1743,8 @@ impl App {
 
     pub fn logout(&self, token: &str) {
         self.auth.logout(token);
+        // Its tabs can no longer report that they closed.
+        self.rooms.presence().end_session(token);
     }
 
     pub async fn authenticate(&self, token: &str) -> Option<Authenticated> {
