@@ -161,6 +161,11 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_with(super::upgrade::DEFAULT_START_TIMEOUT).await
+}
+
+/// A harness whose quality upgrades wait `upgrade_wait` for an upload to start.
+async fn harness_with(upgrade_wait: Duration) -> Harness {
     let root = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let library = Arc::new(
@@ -188,6 +193,7 @@ async fn harness() -> Harness {
                 server: server_addr.to_string(),
                 ports: vec![our_port],
                 upload_slots: 2,
+                upgrade_start_timeout: upgrade_wait,
                 rules: rules.clone(),
                 max_track_length: TrackLengthLimit::new(MaxTrackLength::DEFAULT),
                 staging_dir: staging.clone(),
@@ -477,7 +483,9 @@ async fn quality_upgrade_finds_verifies_and_files_a_lossless_copy() {
         let session = Arc::clone(&session);
         async move {
             let cancel = tokio_util::sync::CancellationToken::new();
-            session.upgrade(&wanted, &cancel, &|_| {}).await
+            session
+                .upgrade(&wanted, &cancel, &Default::default(), &|_| {})
+                .await
         }
     });
 
@@ -718,7 +726,9 @@ async fn quality_upgrade_rejects_fake_lossless_and_tries_the_next_copy() {
         let session = Arc::clone(&session);
         async move {
             let cancel = tokio_util::sync::CancellationToken::new();
-            session.upgrade(&wanted, &cancel, &|_| {}).await
+            session
+                .upgrade(&wanted, &cancel, &Default::default(), &|_| {})
+                .await
         }
     });
     let body = next_server_message(&mut h.seen, server_code::FILE_SEARCH).await;
@@ -802,6 +812,167 @@ async fn quality_upgrade_rejects_fake_lossless_and_tries_the_next_copy() {
 }
 
 /// Put a track into the user's library.
+/// Send a search reply offering one lossless copy of the 7 s "Glue".
+async fn offer(h: &Harness, user: &str, token: u32, path: &str, size: usize) {
+    let mut inbound = TcpStream::connect(("127.0.0.1", h.our_port)).await.unwrap();
+    let init = PeerInit::PeerInit {
+        username: user.into(),
+        kind: Some(super::messages::ConnKind::Peer),
+    };
+    inbound.write_all(&init.encode()).await.unwrap();
+    let reply = PeerMessage::SearchReply(SearchReply {
+        username: user.into(),
+        token,
+        files: vec![SharedFile {
+            name: path.into(),
+            size: size as u64,
+            attrs: FileAttrs {
+                duration_secs: Some(7),
+                sample_rate_hz: Some(44_100),
+                bit_depth: Some(16),
+                ..FileAttrs::default()
+            },
+        }],
+        slot_free: true,
+        avg_speed: 100_000,
+        queue_length: 0,
+    });
+    inbound.write_all(&reply.encode()).await.unwrap();
+}
+
+#[tokio::test]
+async fn quality_upgrade_moves_on_from_a_copy_that_never_starts() {
+    moves_on_from_a_stuck_copy(false).await;
+}
+
+#[tokio::test]
+async fn quality_upgrade_skips_a_waiting_copy_when_asked() {
+    moves_on_from_a_stuck_copy(true).await;
+}
+
+/// alice queues the request but never uploads: the upgrade gives up on her
+/// after the start timeout or, with `skip_by_user`, as soon as the user
+/// asks (the timeout is then far away).
+async fn moves_on_from_a_stuck_copy(skip_by_user: bool) {
+    let wait = if skip_by_user { 600 } else { 2 };
+    let mut h = harness_with(Duration::from_secs(wait)).await;
+    h.soulseek
+        .sign_in(ME, Role::Pirate, "digger", "secret", false)
+        .await
+        .unwrap();
+    let session = h.soulseek.require(ME).unwrap();
+    let meta = crate::domain::metadata::TrackMetadata {
+        provider: crate::domain::provider::ProviderKind::SoundCloud,
+        provider_track_id: "42".into(),
+        source_url: "https://soundcloud.com/bicep/glue".into(),
+        title: "Glue".into(),
+        artists: vec!["Bicep".into()],
+        album: None,
+        album_artist: None,
+        track_number: None,
+        disc_number: None,
+        release_date: None,
+        genres: vec![],
+        description: None,
+        copyright: None,
+        label: None,
+        isrc: None,
+        artwork_url: None,
+        duration_secs: Some(7.0),
+        inferred: vec![],
+    };
+    let wanted = super::UpgradeWanted {
+        key: meta.key(),
+        title: meta.title.clone(),
+        artists: meta.artists.clone(),
+        duration_secs: Some(7.0),
+        metadata: Some(meta),
+        artwork_file: None,
+    };
+    let notes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let upgrade = tokio::spawn({
+        let session = Arc::clone(&session);
+        let notes = Arc::clone(&notes);
+        async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let skip = super::SkipRequests::default();
+            let skipped = std::sync::atomic::AtomicBool::new(false);
+            session
+                .upgrade(&wanted, &cancel, &skip, &|progress| {
+                    if let super::UpgradeProgress::Waiting { switch_in, .. } = progress {
+                        notes.lock().unwrap().push(switch_in);
+                        if skip_by_user && !skipped.swap(true, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            skip.request();
+                        }
+                    }
+                })
+                .await
+        }
+    });
+
+    // Only alice has it, and she queues the request but never uploads.
+    let real = noise_wav(None);
+    let (stuck_path, real_path) = ("@@a\\Bicep - Glue.flac", "@@b\\Bicep\\Glue.wav");
+    let body = next_server_message(&mut h.seen, server_code::FILE_SEARCH).await;
+    let token = Reader::new(&body).u32().unwrap();
+    offer(&h, "alice", token, stuck_path, real.len()).await;
+    let (mut stuck, _) = tokio::time::timeout(Duration::from_secs(40), h.peer_listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    read_init(&mut stuck).await;
+    assert_eq!(
+        read_peer_message(&mut stuck).await,
+        PeerMessage::QueueUpload {
+            filename: stuck_path.into()
+        }
+    );
+
+    // Given up on, the upgrade searches again; bob has come online since.
+    let body = next_server_message(&mut h.seen, server_code::FILE_SEARCH).await;
+    let token = Reader::new(&body).u32().unwrap();
+    offer(&h, "alice", token, stuck_path, real.len()).await;
+    offer(&h, "bob", token, real_path, real.len()).await;
+    upload_one(&mut h, "bob", real_path, &real, 901).await;
+    let entry = tokio::time::timeout(Duration::from_secs(20), upgrade)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        entry
+            .obtained_from
+            .as_deref()
+            .unwrap()
+            .starts_with("slsk://bob/")
+    );
+    // alice was not asked twice, and her download says why it stopped.
+    let alice: Vec<_> = session
+        .downloads()
+        .into_iter()
+        .filter(|d| d.username == "alice")
+        .collect();
+    assert_eq!(alice.len(), 1);
+    assert_eq!(alice[0].state, DownloadState::Cancelled);
+    let why = if skip_by_user {
+        "skipped by the user"
+    } else {
+        "the upload did not start within 2 seconds"
+    };
+    assert_eq!(
+        alice[0].note.as_deref(),
+        Some(format!("Stopped by the quality upgrade: {why}").as_str())
+    );
+    // The wait was counted down while it lasted.
+    let waits = notes.lock().unwrap().clone();
+    assert!(
+        waits.iter().any(|left| *left < Duration::from_secs(wait)),
+        "{waits:?}"
+    );
+    h.soulseek.shutdown().await;
+}
+
 async fn add_glue(h: &Harness) {
     let staged = h._dirs.1.path().join("track.wav");
     std::fs::write(&staged, silent_wav()).unwrap();
@@ -1127,6 +1298,7 @@ async fn rejected_sign_in_is_reported_and_nothing_keeps_running() {
             server: addr.to_string(),
             ports: vec![port],
             upload_slots: 1,
+            upgrade_start_timeout: super::upgrade::DEFAULT_START_TIMEOUT,
             rules: SoulseekRules::new(
                 SoulseekAccess::Everyone,
                 SoulseekAccess::Everyone,
@@ -1225,6 +1397,7 @@ async fn held_sign_in() -> (
                 server: addr.to_string(),
                 ports: vec![free_port()],
                 upload_slots: 1,
+                upgrade_start_timeout: super::upgrade::DEFAULT_START_TIMEOUT,
                 rules: rules.clone(),
                 max_track_length: TrackLengthLimit::new(MaxTrackLength::DEFAULT),
                 staging_dir: dir.path().join("staging"),

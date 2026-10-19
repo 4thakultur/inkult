@@ -120,6 +120,7 @@ pub fn router(app: AppState, clients: Arc<ClientPolicy>) -> Router {
         .route("/api/downloads/finished", delete(clear_finished))
         .route("/api/downloads/upgrade", post(upgrade_from_search))
         .route("/api/downloads/{id}/cancel", post(cancel_job))
+        .route("/api/downloads/{id}/skip", post(skip_job))
         .route("/api/library", get(library))
         .route("/api/library/convert", post(convert))
         .route("/api/library/upgrade", post(upgrade))
@@ -897,6 +898,16 @@ async fn cancel_job(
     Query(params): Query<ScopeParams>,
 ) -> Result<impl IntoResponse, AppError> {
     app.cancel_job(&user, id, params.scope)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn skip_job(
+    State(app): State<AppState>,
+    Extension(user): Extension<User>,
+    Path(id): Path<JobId>,
+    Query(params): Query<ScopeParams>,
+) -> Result<impl IntoResponse, AppError> {
+    app.skip_job(&user, id, params.scope)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

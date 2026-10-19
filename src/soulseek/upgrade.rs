@@ -26,12 +26,14 @@
 //! codec only proves the file is lossless *now*; see `import` on lossy
 //! sources transcoded to FLAC.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::downloads::DownloadState;
@@ -56,10 +58,23 @@ const MIN_FILE_BYTES: u64 = 1024 * 1024;
 const SEARCH_MIN_WAIT: Duration = Duration::from_secs(10);
 /// Then the search is over, found or not.
 const SEARCH_MAX_WAIT: Duration = Duration::from_secs(30);
-const MAX_ATTEMPTS: usize = 5;
-/// A candidate whose upload has not started after this long is given up
-/// for the next one (the last candidate is waited for like any download).
-const START_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Copies tried in all, over every search.
+const MAX_ATTEMPTS: usize = 8;
+/// When every copy found has been tried, Soulseek is searched once more
+/// for users not tried yet: others may have come online since, and a queue
+/// that never moves is no reason to give up on the track.
+const MAX_SEARCHES: usize = 2;
+/// Default for how long a copy may wait to start before the next one is
+/// tried (`INKULT_SOULSEEK_UPGRADE_WAIT`). A user with a free slot starts
+/// within seconds; one who is firewalled, not really sharing or has a long
+/// queue may never start, and the upgrade would wait on them forever.
+pub const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(60);
+/// A running transfer's speed is measured over this long…
+const SPEED_WINDOW: Duration = Duration::from_secs(60);
+/// …and, if it would still need longer than this to finish, it is given up
+/// for the next copy (only when there is one: a slow copy beats none).
+/// Transfers that stop altogether fail on their own (see `downloads`).
+const MAX_REMAINING: Duration = Duration::from_secs(15 * 60);
 const POLL: Duration = Duration::from_secs(1);
 
 /// Extensions of files that can only hold lossless audio.
@@ -198,10 +213,12 @@ pub struct Candidate {
 
 impl Candidate {
     /// Higher is better: a confirmed length first (a wrong file costs a
-    /// whole transfer), then a free upload slot (now beats hours later),
-    /// then quality, then FLAC over AIFF over WAV (tags travel best in
-    /// FLAC), then the shorter queue and the faster peer.
-    fn rank(&self) -> (bool, bool, u32, u32, u8, std::cmp::Reverse<u32>, u32) {
+    /// whole transfer), then the best quality (bit depth, sample rate),
+    /// then the fastest peer, then a free upload slot, then FLAC over AIFF
+    /// over WAV (same audio; tags travel best in FLAC), then the shorter
+    /// queue. A fast peer whose upload does not start soon is given up on
+    /// after the start timeout, so speed may outrank a free slot.
+    fn rank(&self) -> (bool, u32, u32, u32, bool, u8, std::cmp::Reverse<u32>) {
         let container = match extension(&self.path).as_str() {
             "flac" => 2,
             "aif" | "aiff" => 1,
@@ -209,12 +226,12 @@ impl Candidate {
         };
         (
             self.length_confirmed,
-            self.slot_free,
             self.bit_depth,
             self.sample_rate_hz,
+            self.avg_speed,
+            self.slot_free,
             container,
             std::cmp::Reverse(self.queue_length),
-            self.avg_speed,
         )
     }
 }
@@ -235,6 +252,8 @@ pub enum UpgradeProgress {
     /// Waiting for the peer: contacting it, or queued in its uploads.
     Waiting {
         note: Option<String>,
+        /// Another copy is tried if the upload has not started by then.
+        switch_in: Duration,
     },
     Transferring {
         bytes: u64,
@@ -461,21 +480,114 @@ pub(super) fn candidates(wanted: &UpgradeWanted, replies: &[Reply]) -> Vec<Candi
     found
 }
 
+/// The user's requests to stop waiting for the copy being tried and move
+/// on to the next one. A count rather than a flag: a copy is skipped when
+/// the count changes while it waits, so a stale request (made while
+/// another copy was being tried) never skips a later one.
+#[derive(Debug, Clone, Default)]
+pub struct SkipRequests(Arc<AtomicU64>);
+
+impl SkipRequests {
+    pub fn request(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn count(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// How one candidate's download ended.
 enum Attempt {
     Imported,
     Failed(String),
 }
 
+/// Decides when a candidate is taking too long and the next one should be
+/// tried: it has not started within the start timeout, or it is so slow it
+/// would need more than [`MAX_REMAINING`] to finish.
+struct Watch {
+    start_timeout: Duration,
+    /// When the current wait for the upload to start began.
+    waiting_since: Instant,
+    /// Bytes received at the start of the current speed window, while
+    /// transferring.
+    window: Option<(Instant, u64)>,
+}
+
+impl Watch {
+    fn new(start_timeout: Duration, now: Instant) -> Self {
+        Self {
+            start_timeout,
+            waiting_since: now,
+            window: None,
+        }
+    }
+
+    /// The upload has not started (or went back to waiting, e.g. to be
+    /// retried after a dropped connection): how long until it is given up,
+    /// or why it is given up now.
+    fn waiting(&mut self, now: Instant) -> Result<Duration, String> {
+        if self.window.take().is_some() {
+            self.waiting_since = now;
+        }
+        let waited = now.duration_since(self.waiting_since);
+        self.start_timeout.checked_sub(waited).ok_or_else(|| {
+            format!(
+                "the upload did not start within {}",
+                minutes(self.start_timeout)
+            )
+        })
+    }
+
+    /// Bytes are arriving. With `more` copies left to try, gives up on one
+    /// that would take longer than [`MAX_REMAINING`] to finish.
+    fn transferring(
+        &mut self,
+        now: Instant,
+        bytes: u64,
+        size: u64,
+        more: bool,
+    ) -> Result<(), String> {
+        let &mut (since, from) = self.window.get_or_insert((now, bytes));
+        let elapsed = now.duration_since(since);
+        if elapsed < SPEED_WINDOW {
+            return Ok(());
+        }
+        self.window = Some((now, bytes));
+        let rate = bytes.saturating_sub(from) as f64 / elapsed.as_secs_f64();
+        let left = size.saturating_sub(bytes) as f64;
+        let too_slow = left > rate * MAX_REMAINING.as_secs_f64();
+        if !(more && too_slow) {
+            return Ok(());
+        }
+        Err(format!(
+            "too slow ({:.1} KB/s), it would need more than {}",
+            rate / 1000.0,
+            minutes(MAX_REMAINING)
+        ))
+    }
+}
+
+fn minutes(d: Duration) -> String {
+    match d.as_secs() {
+        s if s % 60 != 0 => format!("{s} seconds"),
+        60 => "a minute".into(),
+        s => format!("{} minutes", s / 60),
+    }
+}
+
 impl Session {
     /// Find a lossless copy of `wanted` and add it to the library as the
     /// track's [`OutputFormat::Lossless`] format, owned by this session's
     /// user. The search shows in the user's Soulseek searches and each
-    /// transfer in their downloads, like any other.
+    /// transfer in their downloads, like any other. A copy still waiting
+    /// to start is given up when `skip` is requested.
     pub async fn upgrade(
         self: &Arc<Self>,
         wanted: &UpgradeWanted,
         cancel: &CancellationToken,
+        skip: &SkipRequests,
         report: &(dyn Fn(UpgradeProgress) + Send + Sync),
     ) -> Result<LibraryEntry, UpgradeError> {
         let query = upgrade_query(wanted).ok_or(UpgradeError::NothingToSearch)?;
@@ -489,14 +601,37 @@ impl Session {
         }
         tracing::info!(owner = %self.owner, track = %wanted.key, candidates = found.len(), "quality upgrade candidates");
 
-        let tried: Vec<&Candidate> = found.iter().take(MAX_ATTEMPTS).collect();
+        let mut queue: VecDeque<Candidate> = found.into_iter().take(MAX_ATTEMPTS).collect();
+        // Users asked already (or whose file is already downloading): a
+        // later search does not offer them again.
+        let mut asked: HashSet<String> = HashSet::new();
+        let mut searches = 1;
+        let mut shown = 0;
         let mut attempts = 0;
         let mut last = String::new();
-        for (i, candidate) in tried.iter().enumerate() {
+        loop {
+            let Some(candidate) = queue.pop_front() else {
+                if searches >= MAX_SEARCHES || shown >= MAX_ATTEMPTS {
+                    break;
+                }
+                searches += 1;
+                let fresh: VecDeque<Candidate> = self
+                    .collect_candidates(wanted, &query, cancel, report)
+                    .await?
+                    .into_iter()
+                    .filter(|c| !asked.contains(&c.username))
+                    .take(MAX_ATTEMPTS - shown)
+                    .collect();
+                tracing::info!(owner = %self.owner, track = %wanted.key, candidates = fresh.len(), "quality upgrade searched again");
+                queue = fresh;
+                continue;
+            };
+            asked.insert(candidate.username.clone());
+            shown += 1;
             report(UpgradeProgress::Trying {
-                attempt: i + 1,
-                of: tried.len(),
-                candidate: (*candidate).clone(),
+                attempt: shown,
+                of: shown + queue.len(),
+                candidate: candidate.clone(),
             });
             let target = wanted.target();
             let Some(id) = self
@@ -506,8 +641,10 @@ impl Session {
                 continue; // already being downloaded on its own
             };
             attempts += 1;
-            let last_candidate = i + 1 == tried.len();
-            match self.follow(id, last_candidate, cancel, report).await? {
+            match self
+                .follow(id, !queue.is_empty(), cancel, skip, report)
+                .await?
+            {
                 Attempt::Imported => {
                     return self
                         .ctx
@@ -607,18 +744,24 @@ impl Session {
         }
     }
 
-    /// Follow download `id` to its end, reporting progress. A transfer
-    /// that has not started within [`START_TIMEOUT`] is abandoned unless
-    /// it is the `last` candidate.
+    /// Follow download `id` to its end, reporting progress. It is cancelled
+    /// for the next copy when it takes too long (see [`Watch`]); a slow
+    /// transfer only when `more` copies are lined up. While it waits to
+    /// start, the user may `skip` it.
     async fn follow(
         &self,
         id: u64,
-        last: bool,
+        more: bool,
         cancel: &CancellationToken,
+        skip: &SkipRequests,
         report: &(dyn Fn(UpgradeProgress) + Send + Sync),
     ) -> Result<Attempt, UpgradeError> {
-        let started = tokio::time::Instant::now();
-        let mut began = false;
+        let mut watch = Watch::new(self.ctx.config.upgrade_start_timeout, Instant::now());
+        let mut skips_seen = skip.count();
+        let give_up = |reason: String| {
+            self.abandon_download(id, format!("Stopped by the quality upgrade: {reason}"));
+            Ok(Attempt::Failed(reason))
+        };
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(POLL) => {}
@@ -646,33 +789,36 @@ impl Session {
                     ));
                 }
                 DownloadState::Transferring => {
-                    began = true;
+                    // Skipping is offered while waiting only.
+                    skips_seen = skip.count();
+                    if let Err(reason) =
+                        watch.transferring(Instant::now(), view.bytes, view.size, more)
+                    {
+                        return give_up(reason);
+                    }
                     report(UpgradeProgress::Transferring {
                         bytes: view.bytes,
                         size: view.size,
                         speed_bytes_per_sec: view.speed_bytes_per_sec,
                     });
                 }
-                DownloadState::Importing => {
-                    began = true;
-                    report(UpgradeProgress::Importing);
-                }
+                DownloadState::Importing => report(UpgradeProgress::Importing),
                 DownloadState::Queued
                 | DownloadState::Requesting
                 | DownloadState::Remote
                 | DownloadState::Offered => {
-                    if !began && !last && started.elapsed() >= START_TIMEOUT {
-                        self.cancel_download(id);
-                        return Ok(Attempt::Failed(format!(
-                            "the upload did not start within {} minutes",
-                            START_TIMEOUT.as_secs() / 60
-                        )));
+                    if skip.count() != skips_seen {
+                        return give_up("skipped by the user".into());
                     }
+                    let switch_in = match watch.waiting(Instant::now()) {
+                        Ok(left) => left,
+                        Err(reason) => return give_up(reason),
+                    };
                     let note = match view.place {
                         Some(place) => Some(format!("Place {place} in the user's upload queue")),
                         None => view.note,
                     };
-                    report(UpgradeProgress::Waiting { note });
+                    report(UpgradeProgress::Waiting { note, switch_in });
                 }
             }
         }
@@ -849,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn ranks_sure_and_available_copies_first() {
+    fn ranks_sure_then_best_quality_copies_first() {
         let w = wanted("Glue", &["Bicep"], Some(269.0));
         let replies = vec![
             reply(
@@ -908,15 +1054,44 @@ mod tests {
         assert_eq!(
             order,
             [
+                "busy-hires",
                 "free-hires",
                 "free-flac",
                 "free-wav",
-                "busy-hires",
                 "unknown-length"
             ]
         );
-        let best = &candidates(&w, &replies)[0];
+        let best = &candidates(&w, &replies)[1];
         assert!(best.path.contains("hires"), "one file per user, the best");
+    }
+
+    #[test]
+    fn among_equal_quality_the_fastest_peer_comes_first() {
+        let w = wanted("Glue", &["Bicep"], Some(269.0));
+        let copy = |user: &str, slot_free, avg_speed, depth| Reply {
+            avg_speed,
+            ..reply(
+                user,
+                slot_free,
+                vec![file(
+                    &format!("{user}\\Bicep - Glue.flac"),
+                    Some(269),
+                    Some(depth),
+                    Some(44_100),
+                )],
+            )
+        };
+        let replies = vec![
+            copy("slow", true, 50_000, 16),
+            copy("fast-busy", false, 4_000_000, 16),
+            copy("fast", true, 2_000_000, 16),
+            copy("slow-hires", true, 10_000, 24),
+        ];
+        let order: Vec<String> = candidates(&w, &replies)
+            .into_iter()
+            .map(|c| c.username)
+            .collect();
+        assert_eq!(order, ["slow-hires", "fast-busy", "fast", "slow"]);
     }
 
     #[test]
@@ -930,5 +1105,65 @@ mod tests {
         assert!(candidates(&w, &replies).is_empty());
         let w = wanted("Intro", &[], Some(60.0));
         assert_eq!(candidates(&w, &replies).len(), 1);
+    }
+
+    #[test]
+    fn a_copy_that_never_starts_is_given_up() {
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut watch = Watch::new(Duration::from_secs(180), t0);
+        assert_eq!(watch.waiting(at(0)), Ok(Duration::from_secs(180)));
+        assert_eq!(watch.waiting(at(179)), Ok(Duration::from_secs(1)));
+        assert_eq!(
+            watch.waiting(at(181)).unwrap_err(),
+            "the upload did not start within 3 minutes"
+        );
+    }
+
+    #[test]
+    fn going_back_to_waiting_restarts_the_clock() {
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut watch = Watch::new(Duration::from_secs(180), t0);
+        assert!(watch.waiting(at(170)).is_ok());
+        assert!(watch.transferring(at(171), 0, 1000, true).is_ok());
+        // The connection dropped and the download is queued again.
+        assert_eq!(watch.waiting(at(200)), Ok(Duration::from_secs(180)));
+        assert!(watch.waiting(at(381)).is_err());
+    }
+
+    #[test]
+    fn a_crawling_transfer_is_given_up_only_for_another_copy() {
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let size = 40_000_000;
+        // 10 kB/s: 40 MB would take more than an hour.
+        for more in [true, false] {
+            let mut watch = Watch::new(Duration::from_secs(180), t0);
+            assert!(watch.transferring(at(0), 0, size, more).is_ok());
+            assert!(watch.transferring(at(30), 300_000, size, more).is_ok());
+            let verdict = watch.transferring(at(60), 600_000, size, more);
+            assert_eq!(verdict.is_err(), more, "{verdict:?}");
+            if more {
+                assert_eq!(
+                    verdict.unwrap_err(),
+                    "too slow (10.0 KB/s), it would need more than 15 minutes"
+                );
+            }
+        }
+        // 100 kB/s: under 7 minutes, kept.
+        let mut watch = Watch::new(Duration::from_secs(180), t0);
+        assert!(watch.transferring(at(0), 0, size, true).is_ok());
+        assert!(watch.transferring(at(60), 6_000_000, size, true).is_ok());
+        // Slow but nearly done: kept.
+        assert!(watch.transferring(at(120), 39_500_000, size, true).is_ok());
+        assert!(watch.transferring(at(180), 39_900_000, size, true).is_ok());
+    }
+
+    #[test]
+    fn waits_are_spelled_out() {
+        assert_eq!(minutes(Duration::from_secs(60)), "a minute");
+        assert_eq!(minutes(Duration::from_secs(180)), "3 minutes");
+        assert_eq!(minutes(Duration::from_secs(90)), "90 seconds");
     }
 }

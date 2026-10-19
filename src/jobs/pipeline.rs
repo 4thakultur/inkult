@@ -500,7 +500,11 @@ pub(super) async fn upgrade(
 
     // Which copy is being tried, for the notes of the later stages.
     let trying = std::sync::Mutex::new(String::new());
+    let skip = job.skip_requests();
     let report = |progress: UpgradeProgress| {
+        // Skipping is offered only while a copy waits to start.
+        let waiting = matches!(progress, UpgradeProgress::Waiting { .. });
+        job.update(|s| s.can_skip = waiting);
         match progress {
         UpgradeProgress::Searching {
             query,
@@ -537,13 +541,19 @@ pub(super) async fn upgrade(
                 s.note = Some(label);
             });
         }
-        UpgradeProgress::Waiting { note } => {
+        UpgradeProgress::Waiting { note, switch_in } => {
             let label = super::lock(&trying).clone();
+            let secs = switch_in.as_secs();
+            let switch = format!(
+                "another copy in {}:{:02} unless it starts",
+                secs / 60,
+                secs % 60
+            );
             job.update(|s| {
                 s.state = JobState::Downloading;
                 s.note = Some(match note {
-                    Some(note) => format!("{label} · {note}"),
-                    None => label,
+                    Some(note) => format!("{label} · {note} · {switch}"),
+                    None => format!("{label} · {switch}"),
                 });
             });
         }
@@ -572,7 +582,8 @@ pub(super) async fn upgrade(
         }),
     }
     };
-    let result = session.upgrade(&wanted, cancel, &report).await;
+    let result = session.upgrade(&wanted, cancel, &skip, &report).await;
+    job.update(|s| s.can_skip = false);
     // A cover fetched for this upgrade is used up once it is filed (the
     // import removes it). After a failure it is not needed either, unless
     // a transfer will resume with the next sign-in.

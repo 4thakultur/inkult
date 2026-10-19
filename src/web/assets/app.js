@@ -5,7 +5,7 @@
 
 // Buttons are text, BBS style; brackets come from CSS.
 const GLYPHS = {
-  download: "GET", check: "OK", close: "KILL", save: "SAVE", clock: "WAIT", convert: "CONV", share: "SEND", remove: "DEL",
+  download: "GET", check: "OK", close: "KILL", save: "SAVE", clock: "WAIT", skip: "SKIP", convert: "CONV", share: "SEND", remove: "DEL",
   play: ">", pause: "||", volumeHigh: "VOL", volumeLow: "VOL", volumeOff: "MUTE",
 };
 const STATE_LABELS = {
@@ -1588,6 +1588,17 @@ function jobCard(job) {
       catch (err) { toast(err.message, true); }
     },
   }, icon("close"));
+  // A quality upgrade stuck waiting for a Soulseek user to start uploading
+  // can move on to the next copy without waiting out the countdown.
+  const skip = job.can_skip && !TERMINAL.has(job.state) ? h("button", {
+    class: "icon-btn job-skip", type: "button", title: "Skip to another Soulseek copy",
+    "aria-label": `Skip to another copy of ${job.title}`,
+    onclick: async (event) => {
+      event.currentTarget.disabled = true;
+      try { await api(`/api/downloads/${job.id}/skip?scope=${jobsScope()}`, { method: "POST" }); await pollJobs(); }
+      catch (err) { toast(err.message, true); await pollJobs(); }
+    },
+  }, icon("skip")) : null;
 
   return h("article", { class: "job", "data-id": String(job.id) },
     playableArt(itemForJob(job), job.thumbnail_url, "art lg"),
@@ -1608,7 +1619,7 @@ function jobCard(job) {
       job.error ? h("div", { class: "error-line" },
         `Failed while ${STATE_LABELS[job.error.stage]?.toLowerCase() || job.error.stage}: ${job.error.message}` +
         (job.error.retryable ? " (temporary — try again later)" : "")) : null),
-    cancel);
+    h("div", { class: "job-actions" }, cancel, skip));
 }
 
 function renderJobs() {

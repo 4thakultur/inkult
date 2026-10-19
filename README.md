@@ -267,10 +267,17 @@ you already have the track, it is tagged like your copy instead.
    title and of one artist in its path, must not name another version
    ("Remix", "Live", "Extended Mix"…; "Original Mix" is fine), and, when the
    user's client reports a length, must be within a few seconds of yours.
-3. The best match is downloaded: confirmed length first, then a free upload
-   slot, then bit depth and sample rate, then FLAC over AIFF over WAV, then the
-   shorter queue and faster user. If it fails, is refused, or has not started
-   after 10 minutes, the next one is tried (up to 5).
+3. The best match is downloaded: confirmed length first, then the best
+   quality (bit depth, then sample rate), then the fastest user, then a free
+   upload slot, then FLAC over AIFF over WAV, then the shorter queue. If it
+   fails or is refused, the next one is tried. A copy whose upload has not
+   started after a minute (`INKULT_SOULSEEK_UPGRADE_WAIT`), because the user
+   is offline, firewalled, not really sharing or has a long queue, is
+   cancelled for the next one, and so is a transfer too slow to finish within
+   15 minutes when another copy is lined up. While a copy waits, the job
+   shows the countdown and a **SKIP** button that moves on to the next copy
+   at once. When every copy has been tried, Soulseek is searched once more
+   for users not asked yet (up to 8 copies in all).
 4. The received file must really be lossless (codec *and* [spectrum
    check](#spectrum-check)) and as long as your copy, or it is rejected and
    the next match is tried. It is tagged like your copy (your
@@ -620,6 +627,7 @@ value stops Inkult with a clear error. With Docker, set them in `.env` (see
 | `INKULT_SOULSEEK_SERVER`          | `server.slsknet.org:2242` | Soulseek server |
 | `INKULT_SOULSEEK_PORTS`           | `2234-2238`      | Ports peers connect to, one per signed-in Soulseek account (`off` for none) |
 | `INKULT_SOULSEEK_UPLOAD_SLOTS`    | `2` (1–20)       | Users served at once when sharing |
+| `INKULT_SOULSEEK_UPGRADE_WAIT`    | `60` (30–3600)   | Seconds a quality upgrade waits for a Soulseek upload to start before trying another copy |
 | `INKULT_MAX_TRACK_SECS`           | `600` (0–86400)  | First start only: initial longest track, in seconds |
 | `INKULT_TOTP_ISSUER`              | `Inkult`         | First start only: initial authenticator name (no `:`) |
 | `RUST_LOG`                        | `inkult=info`    | Log filter |

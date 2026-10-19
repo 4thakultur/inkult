@@ -49,6 +49,7 @@ mod e2e_tests;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 
@@ -61,7 +62,10 @@ pub use downloads::FileRequest;
 pub use rules::{MemberRules, Override, SoulseekAccess, SoulseekRules};
 pub use session::{AccountStatus, ConnState, Session};
 pub use store::StoreError;
-pub use upgrade::{UpgradeError, UpgradeProgress, UpgradeWanted};
+pub use upgrade::{
+    DEFAULT_START_TIMEOUT as DEFAULT_UPGRADE_START_TIMEOUT, SkipRequests, UpgradeError,
+    UpgradeProgress, UpgradeWanted,
+};
 
 /// Longest search query accepted (the network has no documented limit;
 /// real queries are short).
@@ -125,6 +129,9 @@ pub struct SoulseekConfig {
     /// Listening ports handed out to sessions, one each.
     pub ports: Vec<u16>,
     pub upload_slots: usize,
+    /// How long a quality upgrade waits for a copy's upload to start
+    /// before trying the next one.
+    pub upgrade_start_timeout: Duration,
     /// Who may use Soulseek and whether anyone may share (live).
     pub rules: SoulseekRules,
     /// Search results over it are dropped and received files over it are

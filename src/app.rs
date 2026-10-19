@@ -870,6 +870,15 @@ impl App {
         }
     }
 
+    /// Skip the Soulseek copy a quality upgrade is waiting for.
+    pub fn skip_job(&self, actor: &User, id: JobId, scope: LibraryScope) -> Result<(), AppError> {
+        if self.jobs.skip(id, Self::viewer(actor, scope)?) {
+            Ok(())
+        } else {
+            Err(AppError::NotFound)
+        }
+    }
+
     pub fn clear_finished_jobs(
         &self,
         actor: &User,

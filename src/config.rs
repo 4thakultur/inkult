@@ -18,6 +18,7 @@
 //! | `INKULT_SOULSEEK_SERVER`           | `server.slsknet.org:2242` |
 //! | `INKULT_SOULSEEK_PORTS`            | `2234-2238`      |
 //! | `INKULT_SOULSEEK_UPLOAD_SLOTS`     | `2` (1–20)       |
+//! | `INKULT_SOULSEEK_UPGRADE_WAIT`     | `60` s (30–3600) |
 //! | `INKULT_TOTP_ISSUER`               | `Inkult`, first start only |
 //! | `INKULT_TRUSTED_PROXIES`           | (none)           |
 //!
@@ -54,6 +55,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::settings::{MAX_TRACK_SECS_LIMIT, ServerSettings, validate_issuer};
 
@@ -95,6 +97,9 @@ pub struct Config {
     /// Listening ports for Soulseek sessions (empty: none listen).
     pub soulseek_ports: Vec<u16>,
     pub soulseek_upload_slots: usize,
+    /// How long a quality upgrade waits for a Soulseek upload to start
+    /// before trying another copy.
+    pub soulseek_upgrade_wait: Duration,
     /// Admin-panel settings used when `settings.json` does not exist yet.
     pub initial_settings: ServerSettings,
     /// Set variables that only seed [`Self::initial_settings`].
@@ -215,6 +220,12 @@ impl Config {
                 2,
                 1..=20,
             )?,
+            soulseek_upgrade_wait: Duration::from_secs(ranged(
+                get("INKULT_SOULSEEK_UPGRADE_WAIT"),
+                "INKULT_SOULSEEK_UPGRADE_WAIT",
+                crate::soulseek::DEFAULT_UPGRADE_START_TIMEOUT.as_secs(),
+                30..=3600,
+            )?),
             initial_settings: initial_settings(&get)?,
             initial_settings_vars: ["INKULT_MAX_TRACK_SECS", "INKULT_TOTP_ISSUER"]
                 .into_iter()
@@ -470,9 +481,18 @@ mod tests {
         let c = config(&[]).unwrap();
         assert_eq!(c.bind.to_string(), "127.0.0.1:9876");
         assert_eq!(c.max_concurrent_downloads, 2);
+        assert_eq!(c.soulseek_upgrade_wait, Duration::from_secs(60));
         assert_eq!(c.staging_dir, PathBuf::from("./data/staging"));
         assert_eq!(c.initial_settings, ServerSettings::default());
         assert!(c.initial_settings_vars.is_empty() && c.retired_vars.is_empty());
+    }
+
+    #[test]
+    fn upgrade_wait_is_bounded() {
+        let c = config(&[("INKULT_SOULSEEK_UPGRADE_WAIT", "600")]).unwrap();
+        assert_eq!(c.soulseek_upgrade_wait, Duration::from_secs(600));
+        assert!(config(&[("INKULT_SOULSEEK_UPGRADE_WAIT", "5")]).is_err());
+        assert!(config(&[("INKULT_SOULSEEK_UPGRADE_WAIT", "3601")]).is_err());
     }
 
     #[test]

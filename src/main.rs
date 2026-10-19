@@ -114,6 +114,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 server: config.soulseek_server.clone(),
                 ports: config.soulseek_ports.clone(),
                 upload_slots: config.soulseek_upload_slots,
+                upgrade_start_timeout: config.soulseek_upgrade_wait,
                 rules: settings.soulseek_rules(),
                 max_track_length: settings.track_limit(),
                 staging_dir: config.staging_dir.clone(),

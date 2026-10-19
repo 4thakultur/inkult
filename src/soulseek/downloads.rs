@@ -644,6 +644,14 @@ impl Session {
             .collect()
     }
 
+    /// Cancel download `id`, saying `why` on it in the downloads list.
+    pub(super) fn abandon_download(&self, id: u64, why: String) {
+        if self.cancel_download(id) {
+            self.downloads.with(id, |d| d.view.note = Some(why));
+            self.downloads.mark_dirty();
+        }
+    }
+
     pub fn cancel_download(&self, id: u64) -> bool {
         let cancelled = self.downloads.with(id, |d| {
             // An import takes moments and either fully happens or not at

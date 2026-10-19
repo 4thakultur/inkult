@@ -49,7 +49,7 @@ use crate::domain::provider::{ProviderKind, TrackKey};
 use crate::domain::quality::{AudioFormat, OutputFormat, QualityReport};
 use crate::library::{Library, LibraryEntry};
 use crate::providers::{MusicProvider, TrackSummary};
-use crate::soulseek::{Session as SoulseekSession, UpgradeWanted};
+use crate::soulseek::{Session as SoulseekSession, SkipRequests, UpgradeWanted};
 use crate::tools::ffmpeg::Ffmpeg;
 
 pub type JobId = u64;
@@ -125,6 +125,9 @@ pub struct JobSnapshot {
     pub destination: Option<String>,
     pub artwork_embedded: Option<bool>,
     pub note: Option<String>,
+    /// A quality upgrade is waiting for a Soulseek user to start uploading:
+    /// the user may skip to the next copy.
+    pub can_skip: bool,
     pub warnings: Vec<String>,
     pub error: Option<JobError>,
     pub retries: u32,
@@ -171,6 +174,7 @@ pub enum EnqueueError {
 struct JobEntry {
     snapshot: JobSnapshot,
     cancel: CancellationToken,
+    skip: SkipRequests,
 }
 
 struct Inner {
@@ -397,6 +401,7 @@ impl JobManager {
                 destination: None,
                 artwork_embedded: None,
                 note: None,
+                can_skip: false,
                 warnings: Vec::new(),
                 error: None,
                 retries: 0,
@@ -409,6 +414,7 @@ impl JobManager {
                 JobEntry {
                     snapshot,
                     cancel: cancel.clone(),
+                    skip: SkipRequests::default(),
                 },
             );
             prune_finished(&mut jobs);
@@ -481,6 +487,26 @@ impl JobManager {
         if matches!(viewer, Viewer::All) || job.snapshot.requesters.is_empty() {
             job.cancel.cancel();
         }
+        true
+    }
+
+    /// Give up on the Soulseek copy a quality upgrade is waiting for and
+    /// try the next one. Returns false if the job does not exist, is not
+    /// visible to `viewer`, or is not waiting for a copy to start.
+    pub fn skip(&self, id: JobId, viewer: Viewer) -> bool {
+        let mut jobs = lock(&self.inner.jobs);
+        let Some(job) = jobs.get_mut(&id) else {
+            return false;
+        };
+        if !job.snapshot.can_skip || job.snapshot.state.is_terminal() || !viewer.sees(&job.snapshot)
+        {
+            return false;
+        }
+        // Until the upgrade reports waiting on the next copy.
+        job.snapshot.can_skip = false;
+        job.snapshot.updated_at_ms = now_ms();
+        job.skip.request();
+        tracing::info!(job = id, "quality upgrade copy skipped");
         true
     }
 
@@ -607,6 +633,14 @@ impl JobHandle {
             f(&mut job.snapshot);
             job.snapshot.updated_at_ms = now_ms();
         }
+    }
+
+    /// The user's requests to skip the copy an upgrade waits for.
+    pub fn skip_requests(&self) -> SkipRequests {
+        lock(&self.inner.jobs)
+            .get(&self.id)
+            .map(|j| j.skip.clone())
+            .unwrap_or_default()
     }
 
     pub fn set_state(&self, state: JobState) {
