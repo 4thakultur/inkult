@@ -4693,10 +4693,8 @@ function tickClock() {
   const two = (n) => String(n).padStart(2, "0");
   $("#clock-time").textContent = `${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`;
   $("#clock-date").textContent = `${two(now.getMonth() + 1)}-${two(now.getDate())}-${two(now.getFullYear() % 100)}`;
-  // The taskbar clock (Windows 95 theme) shows minutes only, as Windows does.
-  const short = `${two(now.getHours())}:${two(now.getMinutes())}`;
-  $("#tray-clock").textContent = short;
-  $("#appbar-clock").textContent = short;
+  // The phone taskbar clock (Windows 95 theme) shows minutes only, as Windows does.
+  $("#appbar-clock").textContent = `${two(now.getHours())}:${two(now.getMinutes())}`;
 }
 
 // ---------- messages (chat rooms) ----------
