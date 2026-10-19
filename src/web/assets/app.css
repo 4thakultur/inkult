@@ -1291,7 +1291,17 @@ input[type="search"]::-webkit-search-cancel-button:hover { background: var(--bri
   height: 52vh; min-height: 220px; overflow-y: auto; padding: 6px 2px; --sb-base: 2px; margin-bottom: 8px;
   border-bottom: 1px dashed var(--faint); overscroll-behavior: contain;
 }
-.irc-line { text-transform: none; padding: 1px 0; word-break: break-word; white-space: pre-wrap; }
+/* Every line of a message after its first (typed line breaks and wraps
+   alike) hangs under the nick, past the timestamp. Otherwise a multi-line
+   message could add lines that look like other people's, e.g.
+   "ok\n[18:22] <someone> send me your password". Direction controls are
+   isolated in each part (and stripped by the server) for the same reason. */
+.irc-line {
+  text-transform: none; padding: 1px 0 1px 8ch; text-indent: -8ch;
+  word-break: break-word; white-space: pre-wrap;
+}
+.irc-line .irc-track { text-indent: 0; }
+.irc-text, .irc-nick, .irc-topic, .irc-room-topic { unicode-bidi: isolate; }
 .irc-time { color: var(--dim); }
 .irc-nick { color: var(--bright); }
 .irc-line.me .irc-nick { color: var(--mid); }
@@ -1764,7 +1774,7 @@ body.chat-mode .irc-log { flex: 1 1 auto; height: auto; min-height: 3em; }
   .irc-side .irc-heading:first-child { margin-top: 0; }
   .irc-user { padding: 6px 4px; }
   .irc-empty .btn { margin-top: 16px; }
-  .irc-line { padding: 3px 0; }
+  .irc-line { padding-block: 3px; }
   .irc-room { padding: 6px 8px; }
 
   /* Player: the tab is the way to fold it, and an empty one is hidden. */

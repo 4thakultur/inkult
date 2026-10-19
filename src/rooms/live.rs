@@ -16,7 +16,7 @@
 //! what changed through the normal, permission-checked endpoints. That way
 //! a nudge can never leak a private room's content.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,18 @@ const MAX_TABS_PER_USER: usize = 16;
 const MAX_TAB_ID_CHARS: usize = 64;
 /// Nudges waiting for a slow socket; one that falls behind just refreshes.
 const NUDGE_BUFFER: usize = 64;
+/// Open sockets on the whole server. Upgraded connections leave the HTTP
+/// server's connection caps, so they are bounded here instead.
+const MAX_SOCKETS: usize = 512;
+/// Sockets a user may open per [`RATE_WINDOW`]. A tab opens one per page
+/// load and reconnects with backoff, so only a script opens more; each
+/// open and close tells every tab to refresh, which a loop would turn
+/// into load on everyone.
+const MAX_CONNECTS: usize = 30;
+/// Fallback status reports per user per [`RATE_WINDOW`] (a heartbeat every
+/// 15 s per tab, plus one per visibility change), for the same reason.
+const MAX_REPORTS: usize = 60;
+const RATE_WINDOW: Duration = Duration::from_secs(60);
 
 /// Where a member is right now, best first; member lists sort by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -72,6 +84,10 @@ pub enum LiveError {
     InvalidTab,
     #[error("too many open Inkult tabs for this account")]
     TooManyTabs,
+    #[error("too many live connections on this server; try again later")]
+    ServerFull,
+    #[error("too many status updates; slow down")]
+    Throttled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,9 +135,41 @@ impl Tab {
 struct Tabs {
     by_user: HashMap<UserId, Vec<Tab>>,
     next_socket: u64,
+    /// Recent socket opens and fallback reports per user, for rate limits.
+    connects: HashMap<UserId, VecDeque<Instant>>,
+    reports: HashMap<UserId, VecDeque<Instant>>,
+}
+
+/// Count one more event for `user` unless `max` happened in the window.
+fn allow(
+    events: &mut HashMap<UserId, VecDeque<Instant>>,
+    user: UserId,
+    max: usize,
+    now: Instant,
+) -> bool {
+    let recent = events.entry(user).or_default();
+    while recent
+        .front()
+        .is_some_and(|&t| now.saturating_duration_since(t) >= RATE_WINDOW)
+    {
+        recent.pop_front();
+    }
+    if recent.len() >= max {
+        return false;
+    }
+    recent.push_back(now);
+    true
 }
 
 impl Tabs {
+    fn sockets(&self) -> usize {
+        self.by_user
+            .values()
+            .flatten()
+            .filter(|t| matches!(t.id, TabId::Socket(_)))
+            .count()
+    }
+
     fn status_at(&self, user: UserId, now: Instant) -> Status {
         self.by_user
             .get(&user)
@@ -171,6 +219,12 @@ impl PresenceBoard {
         let close = Arc::new(Notify::new());
         let id = self.change(user, |tabs| {
             let now = Instant::now();
+            if tabs.sockets() >= MAX_SOCKETS {
+                return Err(LiveError::ServerFull);
+            }
+            if !allow(&mut tabs.connects, user, MAX_CONNECTS, now) {
+                return Err(LiveError::Throttled);
+            }
             let list = tabs.by_user.entry(user).or_default();
             list.retain(|t| t.status_at(now) != Status::Offline);
             if list.len() >= MAX_TABS_PER_USER {
@@ -223,6 +277,9 @@ impl PresenceBoard {
         let id = TabId::Reported(tab.to_owned());
         self.change(user, |tabs| {
             let now = Instant::now();
+            if !allow(&mut tabs.reports, user, MAX_REPORTS, now) {
+                return Err(LiveError::Throttled);
+            }
             let list = tabs.by_user.entry(user).or_default();
             list.retain(|t| t.id != id && t.status_at(now) != Status::Offline);
             if status == Status::Offline {
@@ -297,6 +354,8 @@ impl PresenceBoard {
             for tab in tabs.by_user.remove(&user).unwrap_or_default() {
                 tab.close();
             }
+            tabs.connects.remove(&user);
+            tabs.reports.remove(&user);
             Ok::<_, LiveError>(())
         });
     }
@@ -478,6 +537,51 @@ mod tests {
         drop(laptop);
         drop(phone);
         assert_eq!(board.status(ALICE), Status::Offline);
+    }
+
+    #[test]
+    fn churn_and_report_floods_are_refused() {
+        let board = PresenceBoard::default();
+        for _ in 0..MAX_CONNECTS {
+            drop(board.connect(ALICE, "s", Status::Online).unwrap());
+        }
+        assert!(matches!(
+            board.connect(ALICE, "s", Status::Online),
+            Err(LiveError::Throttled)
+        ));
+        // Others are not held back by one user's loop.
+        let _bob = board.connect(UserId(2), "s", Status::Online).unwrap();
+
+        for i in 0..MAX_REPORTS {
+            let status = if i % 2 == 0 {
+                Status::Online
+            } else {
+                Status::Idle
+            };
+            board.report(UserId(3), "s", "t", status).unwrap();
+        }
+        assert!(matches!(
+            board.report(UserId(3), "s", "t", Status::Online),
+            Err(LiveError::Throttled)
+        ));
+    }
+
+    #[test]
+    fn the_server_caps_open_sockets() {
+        let board = PresenceBoard::default();
+        let sockets: Vec<SocketTab> = (0..MAX_SOCKETS as u64)
+            .map(|i| {
+                board
+                    .connect(UserId(100 + i / 8), "s", Status::Idle)
+                    .unwrap()
+            })
+            .collect();
+        assert!(matches!(
+            board.connect(UserId(1), "s", Status::Idle),
+            Err(LiveError::ServerFull)
+        ));
+        drop(sockets);
+        assert!(board.connect(UserId(1), "s", Status::Idle).is_ok());
     }
 
     #[test]

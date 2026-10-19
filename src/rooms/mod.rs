@@ -1036,7 +1036,7 @@ fn clean_topic(raw: &str) -> Result<Option<String>, RoomError> {
     if raw.chars().count() > MAX_TOPIC_CHARS * 2 {
         return Err(too_long("topic", MAX_TOPIC_CHARS));
     }
-    let topic = clean_text(raw);
+    let topic = clean_text(&strip_bidi_controls(raw));
     if topic
         .as_ref()
         .is_some_and(|t| t.chars().count() > MAX_TOPIC_CHARS)
@@ -1049,8 +1049,8 @@ fn clean_topic(raw: &str) -> Result<Option<String>, RoomError> {
 /// Keeps line breaks (a pasted tracklist should stay readable) but bounds
 /// both length and line count so one message cannot bury the room.
 fn clean_message(raw: &str) -> Result<String, RoomError> {
-    let text =
-        clean_multiline(raw).ok_or_else(|| RoomError::InvalidInput("message is empty".into()))?;
+    let text = clean_multiline(&strip_bidi_controls(raw))
+        .ok_or_else(|| RoomError::InvalidInput("message is empty".into()))?;
     if text.chars().count() > MAX_TEXT_CHARS {
         return Err(too_long("message", MAX_TEXT_CHARS));
     }
@@ -1060,6 +1060,16 @@ fn clean_message(raw: &str) -> Result<String, RoomError> {
         )));
     }
     Ok(text)
+}
+
+/// Drop the characters that override text direction (U+202A–U+202E,
+/// U+2066–U+2069). In a chat they only serve to make a line display
+/// differently from what it says, such as reversing a name or a link.
+/// Ordinary right-to-left text needs none of them.
+fn strip_bidi_controls(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        .collect()
 }
 
 fn too_long(what: &str, max: usize) -> RoomError {
@@ -1109,6 +1119,17 @@ mod tests {
         ] {
             assert!(normalize_room_name(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn direction_overrides_are_dropped() {
+        assert_eq!(
+            clean_message("hi \u{202E}evil\u{202C} \u{2067}x\u{2069}").unwrap(),
+            "hi evil x"
+        );
+        assert_eq!(clean_topic("\u{202E}cba").unwrap().as_deref(), Some("cba"));
+        // Right-to-left text itself is untouched.
+        assert_eq!(clean_message("שלום").unwrap(), "שלום");
     }
 
     #[test]
