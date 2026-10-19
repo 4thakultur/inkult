@@ -148,8 +148,21 @@ function icon(name) {
 
 function art(url, cls = "art") {
   const img = h("img", { class: cls, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
+  img.addEventListener("error", dropBrokenCover);
   if (typeof url === "string" && url.startsWith("https://")) img.src = url;
   return img;
+}
+
+/** A cover that fails to load (expired CDN link, removed upload) shows the
+ * theme's placeholder cover (app.css) instead of a broken image. */
+function dropBrokenCover(event) {
+  const img = event.currentTarget;
+  img.removeAttribute("src");
+  // Chromium keeps drawing its broken-image icon on the element that
+  // failed, even without a src, so a fresh copy takes its place.
+  const fresh = img.cloneNode(false);
+  fresh.addEventListener("error", dropBrokenCover);
+  img.replaceWith(fresh);
 }
 
 function formatDuration(secs) {
@@ -2459,6 +2472,8 @@ const player = {
   /** Item being prepared, before it becomes `current`. */
   loading: null,
   loadToken: 0,
+  /** Cover URL the player is waiting on to load, or null. */
+  cover: null,
   /** Track position (s) the user is dragging the waveform to, or null. */
   scrub: null,
   /** Track position (s) a failed stream was resumed from, or null. */
@@ -2610,10 +2625,31 @@ function trackDuration() {
   return known;
 }
 
-function showNowPlaying(item, sourceText) {
+/**
+ * The player's cover takes a URL only once a copy of it has loaded, so a
+ * cover that fails never leaves the browser's broken-image icon over the
+ * theme's placeholder (some browsers keep it even after the src is gone).
+ */
+function showPlayerCover(url) {
   const img = $("#np-art");
-  if (typeof item.artwork === "string" && item.artwork.startsWith("https://")) img.src = item.artwork;
-  else img.removeAttribute("src");
+  if (!(typeof url === "string" && url.startsWith("https://"))) {
+    player.cover = null;
+    img.removeAttribute("src");
+    return;
+  }
+  if (url === player.cover || url === img.getAttribute("src")) return;
+  player.cover = url;
+  img.removeAttribute("src");
+  const probe = new Image();
+  probe.referrerPolicy = "no-referrer";
+  probe.addEventListener("load", () => {
+    if (player.cover === url) $("#np-art").src = url;
+  });
+  probe.src = url;
+}
+
+function showNowPlaying(item, sourceText) {
+  showPlayerCover(item.artwork);
   $("#np-title").textContent = item.title;
   $("#np-title").title = item.title;
   $("#np-artist").textContent = item.artists.join(", ") || "Unknown artist";
